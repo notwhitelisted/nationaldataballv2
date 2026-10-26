@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>National Data Ball</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header>
+  <div class="brand">National Data Ball</div>
+  <div class="sport-toggle" role="tablist">
+    <button data-sport="nfl" class="active">NFL</button>
+    <button data-sport="nba">NBA</button>
+  </div>
+  <nav>
+    <button data-tab="edges" class="active">Edges</button>
+    <button data-tab="games">Games</button>
+    <button data-tab="props">Projections</button>
+    <button data-tab="injuries">Injuries</button>
+    <button data-tab="bets">Bets</button>
+    <button data-tab="model">Model</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+  <div class="refresh">
+    <span id="refresh-status" class="muted"></span>
+    <button id="refresh-btn" title="Stats, results, schedule and injuries (free)">Refresh data</button>
+    <span id="odds-quota" class="muted small"></span>
+    <button id="lines-btn" title="Sportsbook spreads, totals and moneylines from The Odds API">Update lines</button>
+  </div>
+</header>
+
+<main>
+  <section id="tab-edges" class="tab active">
+    <div class="filters">
+      <label>Markets
+        <select id="f-group">
+          <option value="all">All</option>
+          <option value="game">Game lines</option>
+          <option value="props">Player props</option>
+        </select>
+      </label>
+      <label>Min EV % <input id="f-minev" type="number" step="0.5" value="5"></label>
+      <label>Max Kalshi spread ¢ <input id="f-spread" type="number" step="1" value="6"></label>
+      <label class="check"><input id="f-tails" type="checkbox" checked> Hide long shots (&lt;10¢ / &gt;90¢)</label>
+      <label class="check"><input id="f-flagged" type="checkbox" checked> Hide "far from market"</label>
+      <label>Search <input id="f-search" type="search" placeholder="team, player…"></label>
+      <button id="edges-reload">Reload prices</button>
+    </div>
+    <p class="muted small">Fair = blend of our model with the sportsbook line (or Kalshi's own price when no line exists).
+      EV is per dollar risked after Kalshi's taker fee. Stake uses fractional Kelly from Settings.</p>
+    <div id="edges-table" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-games" class="tab">
+    <p class="muted small">"Book" is a no-vig consensus across sportsbooks (Pinnacle weighted 3x) once you press Update lines.
+      "Props" pulls that game's sportsbook player props so prop edges are measured against real lines.</p>
+    <div id="games-table" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-injuries" class="tab">
+    <div class="filters">
+      <label>Search <input id="i-search" type="search" placeholder="team or player"></label>
+      <label class="check"><input id="i-out" type="checkbox"> Only out / doubtful</label>
+    </div>
+    <p class="muted small">ESPN injury feed (refreshes every 10 minutes while the app is in use). For breaking news minutes
+      before tip-off, the official NBA injury report and beat reporters are still faster.</p>
+    <div id="injuries-table" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-props" class="tab">
+    <div class="filters"><label>Search <input id="p-search" type="search" placeholder="player or team"></label></div>
+    <div id="props-table" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-bets" class="tab">
+    <div class="filters">
+      <div class="sport-toggle" id="bet-mode">
+        <button data-mode="real" class="active">Real</button>
+        <button data-mode="paper">Paper</button>
+        <button data-mode="all">All</button>
+      </div>
+      <button id="bets-sync">Sync results &amp; closing prices</button>
+      <button id="kalshi-import" style="display:none">Import from my Kalshi account</button>
+      <button id="paper-run">Paper-bet current edges</button>
+      <span id="kalshi-balance" class="muted small"></span>
+    </div>
+    <p class="muted small">CLV = closing mid price minus what you paid. You buy at the ask, so a new bet starts slightly
+      negative and needs the market to move your way. Paper bets hold one position per ladder (best rung only).</p>
+    <div id="bets-summary" class="cards"></div>
+    <div id="bets-breakdown"></div>
+    <h3>Bets</h3>
+    <div id="bets-table" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-model" class="tab">
+    <div id="model-backtest"></div>
+    <h3>Team ratings</h3>
+    <p class="muted small">Points per game above/below average on offense and defense, from the recency-weighted ridge model.</p>
+    <div id="model-ratings" class="table-wrap"></div>
+  </section>
+
+  <section id="tab-settings" class="tab">
+    <form id="settings-form" class="settings"></form>
+  </section>
+</main>
+
+<dialog id="bet-dialog">
+  <form method="dialog" id="bet-form">
+    <h3>Log bet</h3>
+    <p id="bet-desc"></p>
+    <label>Side <select name="side"><option value="yes">YES</option><option value="no">NO</option></select></label>
+    <label>Price paid ($ per contract) <input name="price" type="number" step="0.01" min="0.01" max="0.99" required></label>
+    <label>Contracts <input name="contracts" type="number" step="1" min="1" required></label>
+    <label>Notes <input name="notes" type="text"></label>
+    <div class="row"><button value="cancel" formnovalidate>Cancel</button><button id="bet-save" value="save" class="primary">Save</button></div>
+  </form>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
