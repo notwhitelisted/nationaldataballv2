@@ -4,16 +4,19 @@ This is how to tell whether the model has an edge before risking money. Each mar
 is paper-bet once, at the price first seen, so closing line value (CLV) and results can be
 measured per market type, edge size and price range.
 """
-import re
 import threading
+from datetime import datetime, timezone
 import time
 import traceback
 
 from . import bets, edges
+from .edges import ladder_key
 from .db import get_settings
 
 INTERVAL_SECONDS = 15 * 60
 MAX_SPREAD = 0.06
+# Shortlist picks lean on sportsbook prices; don't paper-bet off lines older than this.
+MAX_LINE_AGE_HOURS = 12
 
 
 def qualifies(r: dict, min_edge: float) -> bool:
@@ -23,21 +26,8 @@ def qualifies(r: dict, min_edge: float) -> bool:
             and not any(f.startswith("Model far from market") for f in r["flags"]))
 
 
-def ladder_key(r: dict) -> str:
-    """Kalshi lists ladders (PHI by 3.5 / 4.5 / 7.5 ...). Rungs are highly correlated, so the
-    paper book holds one position per ladder: per game for moneyline/total, per team for
-    spreads/team totals, per player + stat for props."""
-    parts = r["ticker"].split("-")
-    event = "-".join(parts[:2])
-    if r["type"] in ("moneyline", "total"):
-        return event
-    if r["type"] in ("spread", "team_total"):
-        return f"{event}-{re.match(r'[A-Z]+', parts[2]).group(0)}"
-    return "-".join(parts[:3])
-
-
-def record(r: dict, settings: dict, source: str) -> dict | None:
-    ext = f"paper:{ladder_key(r)}"
+def record(r: dict, settings: dict, source: str, prefix: str = "paper") -> dict | None:
+    ext = f"{prefix}:{ladder_key(r)}"
     if bets.has_ext_id(ext):
         return None
     return bets.create({
@@ -65,10 +55,35 @@ def run_once() -> dict:
     return {"created": created, **bets.sync()}
 
 
+def lines_fresh(lines_at: str | None) -> bool:
+    if not lines_at:
+        return False
+    age = datetime.now(timezone.utc) - datetime.fromisoformat(lines_at)
+    return age.total_seconds() <= MAX_LINE_AGE_HOURS * 3600
+
+
+def run_shortlist() -> int:
+    """Paper-bet each shortlist pick once (its own book, separate from the all-edges paper trader),
+    so the shortlist's own CLV and results can be judged before real money follows it."""
+    settings = get_settings()
+    created = 0
+    for sport in ("nfl", "nba"):
+        res = edges.shortlist(sport, settings, force=True)
+        if not lines_fresh(res["lines_at"]):
+            continue
+        for r in res["picks"]:
+            if record(r, settings, "shortlist", prefix="paper-sl"):
+                created += 1
+    return created
+
+
 def _loop() -> None:
     while True:
         try:
-            if get_settings()["auto_paper"] >= 1:
+            s = get_settings()
+            if s["paper_shortlist"] >= 1:
+                run_shortlist()
+            if s["auto_paper"] >= 1:
                 run_once()
             else:
                 bets.sync()  # keep closing prices and results current for logged bets

@@ -74,3 +74,4 @@ dialog label { display: grid; gap: 4px; font-size: 13px; }
 dialog .row { display: flex; justify-content: flex-end; gap: 8px; }
 .empty { padding: 24px; color: var(--muted); }
 h3 { margin: 20px 0 6px; }
+[hidden] { display: none !important; }

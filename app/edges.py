@@ -1,9 +1,11 @@
 """Join model probabilities with live Kalshi prices to surface +EV contracts."""
 import math
+import re
 import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 
+from .db import get_meta
 from .data import injuries, kalshi, nba, nfl, odds
 from .models import games as gm
 from .models import pricing, props
@@ -78,6 +80,8 @@ def _team_prob(m: dict, g: dict, view: dict) -> float | None:
         return None
     sign = 1 if team == g["home"] else -1
     if t == "moneyline":
+        if view.get("home_win") is not None:
+            return view["home_win"] if sign == 1 else 1 - view["home_win"]
         return gm.prob_margin_over(m["sport"], sign * view["margin"], sd["margin"], 0)
     if t == "spread":
         return gm.prob_margin_over(m["sport"], sign * view["margin"], sd["margin"], m["strike"])
@@ -104,7 +108,7 @@ def evaluate_market(m: dict, g: dict, st: dict, settings: dict) -> dict | None:
         has_book = g["book"]["margin"] is not None
         if has_book:
             book_p = {"margin": g["book"]["margin"], "total": g["book"]["total"] or g["model"]["total"],
-                      "sd": g["book"]["sd"]}
+                      "sd": g["book"]["sd"], "home_win": g["book"]["home_win"]}
             book_p["home_pts"] = (book_p["total"] + book_p["margin"]) / 2
             book_p["away_pts"] = (book_p["total"] - book_p["margin"]) / 2
             book_prob = _team_prob(m, g, book_p)
@@ -210,6 +214,89 @@ def edges(sport: str, settings: dict, force: bool = False) -> list[dict]:
             rows.append(r)
     rows.sort(key=lambda r: -r["roi"])
     return rows
+
+
+def ladder_key(r: dict) -> str:
+    """Kalshi lists ladders (PHI by 3.5 / 4.5 / 7.5 ...). Rungs are highly correlated, so pick
+    lists hold one position per ladder: per game for moneyline/total, per team for
+    spreads/team totals, per player + stat for props."""
+    parts = r["ticker"].split("-")
+    event = "-".join(parts[:2])
+    if r["type"] in ("moneyline", "total"):
+        return event
+    if r["type"] in ("spread", "team_total"):
+        return f"{event}-{re.match(r'[A-Z]+', parts[2]).group(0)}"
+    return "-".join(parts[:3])
+
+
+# Shortlist rules: the sportsbooks must agree the bet is +EV on its own (no model-only edges),
+# the price must sit away from the tails, and the Kalshi book must be tight enough to trade.
+SHORTLIST_MIN_ROI = 0.04
+SHORTLIST_MIN_BOOK_ROI = 0.02  # below this the books are calling it a coin flip, not value
+SHORTLIST_PER_GAME = 2  # a game's markets all ride on the same game script
+SHORTLIST_PRICE = (0.20, 0.85)
+SHORTLIST_MAX_SPREAD = 0.04
+SHORTLIST_SIZE = 15
+PLAYER_STATUS = ("Out", "Doubtful", "Questionable", "Day-To-Day", "Suspension", "Injured Reserve")
+
+
+def book_side_ev(r: dict) -> float | None:
+    """ROI of the bet if the sportsbook consensus alone is right, for the side being bet."""
+    if r["book_prob"] is None:
+        return None
+    p = r["book_prob"] if r["side"] == "yes" else 1 - r["book_prob"]
+    return (p - r["cost"]) / r["cost"]
+
+
+def shortlist_reject(r: dict) -> str | None:
+    """Why a priced market misses the shortlist, or None if it makes it."""
+    book_roi = book_side_ev(r)
+    if book_roi is None:
+        return "no sportsbook price"
+    if book_roi < SHORTLIST_MIN_BOOK_ROI:
+        return "sportsbooks don't see value"
+    if r["roi"] < SHORTLIST_MIN_ROI:
+        return "edge too small"
+    if not SHORTLIST_PRICE[0] <= r["price"] <= SHORTLIST_PRICE[1]:
+        return "long shot / heavy favorite"
+    if r["spread"] is None or r["spread"] > SHORTLIST_MAX_SPREAD + 1e-9:
+        return "wide Kalshi book"
+    for f in r["flags"]:
+        if f.startswith("Model far from market") or "missed team's last game" in f:
+            return "flagged"
+        if r["player"] and f.startswith(PLAYER_STATUS):
+            return "player injury status"
+    return None
+
+
+def shortlist(sport: str, settings: dict, force: bool = False) -> dict:
+    """Best few bets: sportsbook-confirmed, tradeable, unflagged, one per ladder, two per game."""
+    st = sport_state(sport, settings)
+    rows = edges(sport, settings, force=force)
+    best = {}
+    for r in rows:
+        if shortlist_reject(r) is None:
+            k = ladder_key(r)
+            if k not in best or r["roi"] > best[k]["roi"]:
+                best[k] = r
+    picks, per_game = [], {}
+    for r in sorted(best.values(), key=lambda r: -r["roi"]):
+        if per_game.get(r["game_id"], 0) < SHORTLIST_PER_GAME and len(picks) < SHORTLIST_SIZE:
+            per_game[r["game_id"]] = per_game.get(r["game_id"], 0) + 1
+            picks.append(r)
+    coef = settings["kalshi_fee_coef"]
+    for r in picks:
+        r["book_roi"] = book_side_ev(r)
+        book_p = r["book_prob"] if r["side"] == "yes" else 1 - r["book_prob"]
+        caps = [pricing.max_price(r["side_prob"], SHORTLIST_MIN_ROI, coef),
+                pricing.max_price(book_p, SHORTLIST_MIN_BOOK_ROI, coef), SHORTLIST_PRICE[1]]
+        r["max_price"] = min(c for c in caps if c is not None)
+    # Prop edges only qualify once that game's sportsbook props have been pulled.
+    prop_games = {r["game_id"] for r in rows if r["type"] not in kalshi.GAME_TYPES}
+    no_props = [f"{g['away']} @ {g['home']}" for g in st["games"]
+                if g["id"] in prop_games and not st["prop_lines"].get(g["id"])]
+    return {"picks": picks, "priced": len(rows), "games_without_props": no_props,
+            "lines_at": get_meta(f"odds_lines_at_{sport}")}
 
 
 def games_view(sport: str, settings: dict) -> list[dict]:

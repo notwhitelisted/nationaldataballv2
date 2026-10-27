@@ -1,4 +1,4 @@
-const state = { betMode: "real", sport: "nfl", tab: "edges", edges: [], games: [], props: [], injuries: [], sort: {}, pending: null, odds: null };
+const state = { shortlist: null, betMode: "real", sport: "nfl", tab: "edges", edges: [], games: [], props: [], injuries: [], sort: {}, pending: null, odds: null };
 const $ = (s) => document.querySelector(s);
 
 async function api(path, opts = {}) {
@@ -72,8 +72,32 @@ function filteredEdges() {
   });
 }
 
+const isShortlist = () => $("#f-view").value === "shortlist";
+
+function shortlistRows() {
+  const group = $("#f-group").value;
+  const q = $("#f-search").value.trim().toLowerCase();
+  return (state.shortlist?.picks || []).filter((r) => {
+    if (group === "game" && !GAME_TYPES.has(r.type)) return false;
+    if (group === "props" && GAME_TYPES.has(r.type)) return false;
+    return !q || `${r.title} ${r.game}`.toLowerCase().includes(q);
+  });
+}
+
 function renderEdges() {
   const el = $("#edges-table");
+  const sl = isShortlist();
+  $("#f-advanced").hidden = sl;
+  $("#shortlist-note").hidden = !sl;
+  const missing = sl ? state.shortlist?.games_without_props || [] : [];
+  const linesAt = sl ? state.shortlist?.lines_at : null;
+  const ageH = linesAt ? (Date.now() - new Date(linesAt)) / 3.6e6 : null;
+  $("#shortlist-missing").innerHTML = !sl ? "" : [
+    ageH == null ? `<span class="flag">No sportsbook lines yet: click Update lines.</span>`
+      : `<span class="${ageH > 12 ? "flag" : "muted"}">Sportsbook lines are ${ageH < 1 ? "under an hour" : Math.round(ageH) + " hours"} old${ageH > 12 ? ": click Update lines before betting" : ""}.</span>`,
+    missing.length ? `<span class="flag">No sportsbook props pulled for: ${esc(missing.join(", "))}</span>
+       <span class="muted">Prop bets from these games can't make the shortlist until you click Props on the Games tab.</span>` : "",
+  ].join(" ");
   table(el, [
     { label: "Kickoff", get: (r) => r.kickoff, html: (r) => when(r.kickoff) },
     { label: "Game", get: (r) => r.game },
@@ -85,16 +109,21 @@ function renderEdges() {
     { label: "Book", num: true, get: (r) => forSide(r, r.book_prob), html: (r) => pct(forSide(r, r.book_prob)) },
     { label: "Bid/Ask (yes)", num: true, get: (r) => r.spread, html: (r) => `${cents(r.yes_bid)} / ${cents(r.yes_ask)}` },
     { label: "EV", num: true, get: (r) => r.roi, html: (r) => `<span class="${r.roi > 0 ? "pos" : "neg"}">${pct(r.roi)}</span>` },
+    ...(sl ? [
+      { label: "Book-only EV", num: true, get: (r) => r.book_roi, html: (r) => pct(r.book_roi) },
+      { label: "Max price", num: true, get: (r) => r.max_price, html: (r) => `<b>${cents(r.max_price)}</b>` },
+    ] : []),
     { label: "Stake", num: true, get: (r) => r.stake.stake, html: (r) => `${money(r.stake.stake)} <span class="muted small">(${r.stake.contracts})</span>` },
     { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags) },
     { label: "", get: () => 0, html: (r) => `<button data-log="${esc(r.ticker)}">Log</button> <button data-paper="${esc(r.ticker)}" title="Record a no-money test bet at this price">Paper</button>` },
-  ], filteredEdges(), "edges");
+  ], sl ? shortlistRows() : filteredEdges(), sl ? "shortlist" : "edges");
 }
 
 async function loadEdges(force = false) {
   $("#edges-table").innerHTML = `<div class="empty">Loading Kalshi markets and model…</div>`;
   try {
-    state.edges = await api(`/api/edges?sport=${state.sport}&force=${force}`);
+    if (isShortlist()) state.shortlist = await api(`/api/shortlist?sport=${state.sport}&force=${force}`);
+    else state.edges = await api(`/api/edges?sport=${state.sport}&force=${force}`);
     renderEdges();
   } catch (e) {
     $("#edges-table").innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
@@ -284,6 +313,7 @@ const SETTINGS_HELP = {
   model_weight: ["Model weight (0–1)", "How much Fair trusts our model vs the market. Raise it only once your CLV shows the model adds value."],
   kalshi_fee_coef: ["Kalshi fee coefficient", "Taker fee = coef × price × (1 − price) per contract. Check Kalshi's fee schedule."],
   auto_paper: ["Auto paper trading (0 = off, 1 = on)", "When on, every 15 minutes the app paper-bets each qualifying edge (one per ladder) while it's running."],
+  paper_shortlist: ["Paper-track the Shortlist (0 = off, 1 = on)", "When on, every 15 minutes each new Shortlist pick is recorded once as a paper bet (Strategy: Shortlist), as long as sportsbook lines are under 12 hours old."],
   paper_min_edge: ["Paper min edge (decimal)", "Minimum EV for the paper trader, e.g. 0.05 = 5%. Long shots, wide books and far-from-market flags are always skipped."],
 };
 
@@ -323,6 +353,7 @@ document.querySelectorAll(".sport-toggle button").forEach((b) => {
 });
 ["#f-group", "#f-minev", "#f-spread", "#f-tails", "#f-flagged", "#f-search"].forEach((s) => $(s).addEventListener("input", renderEdges));
 $("#edges-reload").onclick = () => loadEdges(true);
+$("#f-view").addEventListener("change", () => loadEdges());
 $("#p-search").addEventListener("input", renderProps);
 $("#i-search").addEventListener("input", renderInjuries);
 $("#i-out").addEventListener("input", renderInjuries);
@@ -425,7 +456,9 @@ $("#kalshi-import").onclick = async () => {
   $("#kalshi-import").disabled = true;
   try {
     const r = await api("/api/kalshi/import", { method: "POST" });
-    alert(`Imported ${r.created} new and updated ${r.updated} existing positions from Kalshi.`);
+    const br = r.bankroll != null ? `
+Bankroll set to $${r.bankroll.toFixed(2)} from your Kalshi balance.` : "";
+    alert(`Imported ${r.created} new and updated ${r.updated} existing positions from Kalshi.${br}`);
     await loadBets();
   } catch (err) {
     alert(err.message);
@@ -437,7 +470,7 @@ $("#paper-run").onclick = async () => {
   $("#paper-run").disabled = true;
   try {
     const r = await api("/api/paper/run", { method: "POST" });
-    alert(`Recorded ${r.created} new paper bets.`);
+    alert(`Recorded ${r.created} new paper bets, plus ${r.shortlist_created} Shortlist picks.`);
     state.betMode = "paper";
     document.querySelectorAll("#bet-mode button").forEach((x) => x.classList.toggle("active", x.dataset.mode === "paper"));
     await loadBets();

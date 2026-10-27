@@ -79,6 +79,15 @@ def evaluate_side(fair_prob: float, price: float, fee_coef: float) -> dict:
     return {"price": price, "fee": fee, "cost": cost, "ev": ev, "roi": ev / cost if cost > 0 else 0.0}
 
 
+def max_price(prob: float, min_roi: float, coef: float) -> float | None:
+    """Highest whole-cent price at which a contract winning with `prob` still returns `min_roi`
+    after the taker fee: the most to pay when placing a limit order."""
+    for c in range(99, 0, -1):
+        if evaluate_side(prob, c / 100, coef)["roi"] >= min_roi:
+            return c / 100
+    return None
+
+
 def kelly_fraction(fair_prob: float, cost: float) -> float:
     """Full-Kelly bankroll fraction for a binary contract costing `cost` that pays 1."""
     if cost <= 0 or cost >= 1:

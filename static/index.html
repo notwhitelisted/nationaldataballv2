@@ -33,6 +33,12 @@
 <main>
   <section id="tab-edges" class="tab active">
     <div class="filters">
+      <label>View
+        <select id="f-view">
+          <option value="shortlist">Shortlist (best picks)</option>
+          <option value="all">All edges</option>
+        </select>
+      </label>
       <label>Markets
         <select id="f-group">
           <option value="all">All</option>
@@ -40,13 +46,20 @@
           <option value="props">Player props</option>
         </select>
       </label>
-      <label>Min EV % <input id="f-minev" type="number" step="0.5" value="5"></label>
-      <label>Max Kalshi spread ¢ <input id="f-spread" type="number" step="1" value="6"></label>
-      <label class="check"><input id="f-tails" type="checkbox" checked> Hide long shots (&lt;10¢ / &gt;90¢)</label>
-      <label class="check"><input id="f-flagged" type="checkbox" checked> Hide "far from market"</label>
+      <span id="f-advanced" class="filters" hidden>
+        <label>Min EV % <input id="f-minev" type="number" step="0.5" value="5"></label>
+        <label>Max Kalshi spread ¢ <input id="f-spread" type="number" step="1" value="6"></label>
+        <label class="check"><input id="f-tails" type="checkbox" checked> Hide long shots (&lt;10¢ / &gt;90¢)</label>
+        <label class="check"><input id="f-flagged" type="checkbox" checked> Hide "far from market"</label>
+      </span>
       <label>Search <input id="f-search" type="search" placeholder="team, player…"></label>
       <button id="edges-reload">Reload prices</button>
     </div>
+    <p id="shortlist-note" class="muted small">Shortlist = bets the sportsbooks alone price at +2% or better for your side, 20–85¢,
+      Kalshi spread ≤ 4¢, EV ≥ 4%, no injury or far-from-market flags, best rung per ladder, at most 2 per game.
+      Update lines first: sportsbook prices go stale within hours.
+      <b>Max price</b> = the most to pay and still clear both edge bars: place a limit order at or below it.</p>
+    <p id="shortlist-missing" class="small"></p>
     <p class="muted small">Fair = blend of our model with the sportsbook line (or Kalshi's own price when no line exists).
       EV is per dollar risked after Kalshi's taker fee. Stake uses fractional Kelly from Settings.</p>
     <div id="edges-table" class="table-wrap"></div>

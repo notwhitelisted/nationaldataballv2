@@ -27,24 +27,38 @@ MARKET_SD = {
 }
 
 
-_nfl_resid: np.ndarray | None = None
+_nfl_hist: tuple[np.ndarray, np.ndarray, float] | None = None
+
+
+def _nfl_history() -> tuple[np.ndarray, np.ndarray, float]:
+    """(closing spreads, results, residual SD) since 1999, from both teams' perspectives."""
+    global _nfl_hist
+    if _nfl_hist is None:
+        g = pd.read_csv(nfl.GAMES_PATH, usecols=["result", "spread_line"]).dropna()
+        s, r = g["spread_line"].to_numpy(float), g["result"].to_numpy(float)
+        _nfl_hist = (np.concatenate([s, -s]), np.concatenate([r, -r]), float((r - s).std()))
+    return _nfl_hist
 
 
 def prob_margin_over(sport: str, mean: float, sd: float, line: float) -> float:
     """P(margin > line).
 
-    NFL margins are lumpy (3 and 7) and thinner-tailed than a normal in the 7-14 point range,
-    so NFL uses the empirical distribution of results around the closing spread since 1999,
-    rescaled to `sd`. Other sports use the normal approximation.
+    NFL margins pile up on 3 and 7, and where they pile up depends on the spread: a 7-point
+    favorite wins by exactly 3 far more often than a 1-point favorite does. So NFL uses actual
+    results of past games closed near `mean` (a triangular kernel, widened until there are
+    enough games), stretched around `mean` when `sd` differs from the market's. Other sports
+    use the normal approximation.
     """
-    global _nfl_resid
     if sport != "nfl" or not nfl.GAMES_PATH.exists():
         return pricing.prob_over(mean, sd, line)
-    if _nfl_resid is None:
-        g = pd.read_csv(nfl.GAMES_PATH, usecols=["result", "spread_line"]).dropna()
-        r = (g["result"] - g["spread_line"]).to_numpy(float)
-        _nfl_resid = r / r.std()
-    return float(np.mean(_nfl_resid * sd > line - mean))
+    spreads, results, resid_sd = _nfl_history()
+    for width in (1.5, 2.5, 4.0):
+        w = np.clip(1 - np.abs(spreads - mean) / width, 0, None)
+        if w.sum() >= 400:
+            outcome = mean + (results - mean) * (sd / resid_sd)
+            return float(np.sum(w * (outcome > line)) / w.sum())
+    # Very lopsided lines have too few past games; fall back to residuals around the spread.
+    return float(np.mean((results - spreads) * (sd / resid_sd) > line - mean))
 
 
 def load_games(sport: str) -> pd.DataFrame:
@@ -103,14 +117,18 @@ def game_prediction(model: TeamModel, row, model_weight: float, sport: str, tota
     msd = MARKET_SD[sport]
     # The blended estimate is mostly market, so its error is closer to the market's than to our model's.
     fair_sd = model_sd if b_margin is None else {k: w * model_sd[k] + (1 - w) * msd[k] for k in msd}
+    m_hwp = prob_margin_over(sport, m_margin, model.sd_margin, 0)
+    # Win probability blends with the books' moneyline itself, not one derived from their spread.
+    f_hwp = (w * m_hwp + (1 - w) * b_hwp if b_hwp is not None
+             else prob_margin_over(sport, f_margin, fair_sd["margin"], 0))
 
     return {
         "model": {"margin": m_margin, "total": m_total, "home_pts": hp, "away_pts": ap,
-                  "home_win": prob_margin_over(sport, m_margin, model.sd_margin, 0), "sd": model_sd},
+                  "home_win": m_hwp, "sd": model_sd},
         "book": {"margin": b_margin, "total": b_total, "home_win": b_hwp, "sd": msd},
         "fair": {"margin": f_margin, "total": f_total,
                  "home_pts": (f_total + f_margin) / 2, "away_pts": (f_total - f_margin) / 2,
-                 "home_win": prob_margin_over(sport, f_margin, fair_sd["margin"], 0), "sd": fair_sd},
+                 "home_win": f_hwp, "sd": fair_sd},
     }
 
 

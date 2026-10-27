@@ -173,10 +173,51 @@ def test_kalshi_signature_verifies(tmp_path, monkeypatch):
 
 
 def test_ladder_keys_group_rungs():
-    from app.paper import ladder_key
+    from app.edges import ladder_key
     a = ladder_key({"ticker": "KXNFLSPREAD-26NOV01PHIWAS-WAS8", "type": "spread"})
     b = ladder_key({"ticker": "KXNFLSPREAD-26NOV01PHIWAS-WAS4", "type": "spread"})
     c = ladder_key({"ticker": "KXNFLSPREAD-26NOV01PHIWAS-PHI4", "type": "spread"})
     assert a == b != c
     assert ladder_key({"ticker": "KXNBAPTS-26OCT26MINCLE-MINLBALL1-30", "type": "pts"}) == \
         ladder_key({"ticker": "KXNBAPTS-26OCT26MINCLE-MINLBALL1-25", "type": "pts"})
+
+
+def _edge_row(**kw):
+    r = {"side": "yes", "book_prob": 0.60, "cost": 0.52, "price": 0.50, "roi": 0.08, "spread": 0.01,
+         "flags": [], "player": None}
+    return {**r, **kw}
+
+
+def test_shortlist_uses_book_prob_for_the_side_bet():
+    from app.edges import book_side_ev, shortlist_reject
+    assert shortlist_reject(_edge_row()) is None
+    # Hawks +2.5 on Oct 26: NO on "HOU by over 2.5" at ~44.6c all-in, books had HOU covering 57%.
+    hawks = _edge_row(side="no", book_prob=0.57, cost=0.446, price=0.43, roi=0.063)
+    assert book_side_ev(hawks) < 0
+    assert shortlist_reject(hawks) == "sportsbooks don't see value"
+
+
+def test_shortlist_rejections():
+    from app.edges import shortlist_reject
+    assert shortlist_reject(_edge_row(book_prob=None)) == "no sportsbook price"
+    assert shortlist_reject(_edge_row(price=0.12, cost=0.13, book_prob=0.2)) == "long shot / heavy favorite"
+    assert shortlist_reject(_edge_row(spread=0.06)) == "wide Kalshi book"
+    assert shortlist_reject(_edge_row(player={"name": "X"}, flags=["Questionable: ankle"])) == "player injury status"
+    # Team-level injury notes on a game don't block that game's bets.
+    assert shortlist_reject(_edge_row(flags=["HOU Out: Marcus Smart (25 min)"])) is None
+
+
+def test_max_price_is_highest_cent_clearing_the_bar():
+    p = pricing.max_price(0.55, 0.04, 0.07)
+    assert pricing.evaluate_side(0.55, p, 0.07)["roi"] >= 0.04
+    assert pricing.evaluate_side(0.55, p + 0.01, 0.07)["roi"] < 0.04
+    assert pricing.max_price(0.01, 0.04, 0.07) is None
+
+
+def test_paper_lines_freshness():
+    from datetime import datetime, timedelta, timezone
+    from app.paper import lines_fresh
+    now = datetime.now(timezone.utc)
+    assert lines_fresh((now - timedelta(hours=2)).isoformat())
+    assert not lines_fresh((now - timedelta(hours=13)).isoformat())
+    assert not lines_fresh(None)

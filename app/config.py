@@ -53,6 +53,7 @@ DEFAULT_SETTINGS = {
     # Paper trading: 1 = automatically paper-bet every qualifying edge (checked every 15 minutes).
     "auto_paper": 0.0,
     "paper_min_edge": 0.05,
+    "paper_shortlist": 1.0,
 }
 
 

@@ -134,6 +134,11 @@ def edge_list(sport: Sport, force: bool = False):
     return edges.edges(sport, get_settings(), force=force)
 
 
+@app.get("/api/shortlist")
+def shortlist(sport: Sport, force: bool = False):
+    return edges.shortlist(sport, get_settings(), force=force)
+
+
 @app.get("/api/projections")
 def projections(sport: Sport):
     return edges.projections_view(sport, get_settings())
@@ -177,8 +182,9 @@ def bet_list(mode: Literal["real", "paper", "all"] = "real"):
 
 @app.post("/api/paper/run")
 def paper_run():
-    """Paper-bet every qualifying edge right now (also runs every 15 min when auto_paper = 1)."""
-    return paper.run_once()
+    """Paper-bet every qualifying edge and Shortlist pick right now (also runs every 15 min)."""
+    shortlist_created = paper.run_shortlist()
+    return {**paper.run_once(), "shortlist_created": shortlist_created}
 
 
 @app.get("/api/kalshi/account")
@@ -198,6 +204,13 @@ def kalshi_import():
         res = bets.import_from_kalshi(settings["kalshi_fee_coef"], lambda t: edges.kickoff_for(t, settings))
     except Exception as e:
         raise HTTPException(502, f"Kalshi import failed: {e}")
+    # Keep bet sizing in step with the real account: bankroll = cash + open positions' value.
+    try:
+        b = kalshi_account.balance()
+        res["bankroll"] = round(b["cash"] + b["portfolio_value"], 2)
+        save_settings({"bankroll": res["bankroll"]})
+    except Exception:
+        pass
     return {**res, **bets.sync()}
 
 

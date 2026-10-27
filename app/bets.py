@@ -235,6 +235,10 @@ def _stats(rows: list[dict]) -> dict:
     }
 
 
+SOURCE_LABELS = {"shortlist": "Shortlist", "auto": "All qualifying edges", "manual": "Logged by hand",
+                 "kalshi": "Imported from Kalshi"}
+
+
 def list_bets(mode: str = "real") -> dict:
     with session() as conn:
         q = "SELECT * FROM bets" + ("" if mode == "all" else " WHERE mode = ?") + " ORDER BY created_at DESC"
@@ -243,6 +247,7 @@ def list_bets(mode: str = "real") -> dict:
         "Market": lambda r: ("Game: " if r["market_type"] in GAME_TYPES else "Prop: ") + (r["market_type"] or "?")
                             if r["market_type"] else "unknown",
         "Sport": lambda r: r["sport"],
+        "Strategy": lambda r: SOURCE_LABELS.get(r["source"] or "manual", r["source"]),
         "Edge at bet": lambda r: _edge_bucket(r["edge"]),
         "Price": lambda r: _price_bucket(r["price"]),
     }
