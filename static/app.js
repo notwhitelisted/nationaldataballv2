@@ -1,4 +1,4 @@
-const state = { shortlist: null, betMode: "real", sport: "nfl", tab: "edges", edges: [], games: [], props: [], injuries: [], sort: {}, pending: null, odds: null };
+const state = { shortlist: null, betMode: "real", sport: "nfl", tab: "edges", edges: [], games: [], props: [], propLines: [], injuries: [], sort: {}, pending: null, odds: null };
 const $ = (s) => document.querySelector(s);
 
 async function api(path, opts = {}) {
@@ -159,12 +159,43 @@ async function loadGames() {
 
 // ---------------------------------------------------------------- Projections
 
+const linesView = () => $("#p-view").value === "lines";
+
+function renderPropLines() {
+  const q = $("#p-search").value.trim().toLowerCase();
+  const mainOnly = $("#p-main").checked, evOnly = $("#p-ev").checked;
+  const rows = state.propLines.filter((r) => (!mainOnly || r.main) && (!evOnly || r.roi > 0)
+    && (!q || `${r.name} ${r.game}`.toLowerCase().includes(q)));
+  const side = (r) => (r.side === "yes" ? "Over" : "Under");
+  table($("#props-table"), [
+    { label: "Tip", get: (r) => r.kickoff, html: (r) => when(r.kickoff) },
+    { label: "Game", get: (r) => r.game },
+    { label: "Player", get: (r) => r.name },
+    { label: "Stat", get: (r) => r.type_label },
+    { label: "Line", num: true, get: (r) => r.line, html: (r) => num(r.line) },
+    { label: "Proj", num: true, get: (r) => r.proj, html: (r) => num(r.proj) },
+    { label: "Proj vs line", num: true, get: (r) => r.diff,
+      html: (r) => `<span class="${r.diff >= 0 ? "pos" : "neg"}">${r.diff >= 0 ? "Over" : "Under"} ${num(Math.abs(r.diff))}</span>` },
+    { label: "Over % model", num: true, get: (r) => r.model_over, html: (r) => pct(r.model_over) },
+    { label: "Over % books", num: true, get: (r) => r.book_over, html: (r) => pct(r.book_over) },
+    { label: "Over % Kalshi", num: true, get: (r) => r.kalshi_over, html: (r) => pct(r.kalshi_over) },
+    { label: "Pick", get: (r) => side(r), html: (r) => `<span class="side-${r.side}">${side(r)}</span> ${cents(r.price)} <span class="muted small">(${pct(r.side_prob, 0)} to hit)</span>` },
+    { label: "EV", num: true, get: (r) => r.roi, html: (r) => `<span class="${r.roi > 0 ? "pos" : "neg"}">${pct(r.roi)}</span>` },
+    { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags) },
+  ], rows, `lines-${state.sport}`);
+}
+
 function renderProps() {
+  $("#p-line-filters").hidden = !linesView();
+  $("#p-lines-note").hidden = !linesView();
+  if (linesView()) return renderPropLines();
   const q = $("#p-search").value.trim().toLowerCase();
   const rows = state.props.filter((p) => !q || `${p.name} ${p.team} ${p.opp}`.toLowerCase().includes(q));
+  const boost = (p) => [p.min_boost >= 2 ? `+${p.min_boost.toFixed(0)} min` : "", p.usage_boost >= 0.03 ? `+${pct(p.usage_boost, 0)} rate` : ""]
+    .filter(Boolean).map((b) => ` <span class="flag" title="Teammate out">${b}</span>`).join("");
   const common = [
     { label: "Player", get: (p) => p.name,
-      html: (p) => `${esc(p.name)}${p.injury ? ` <span class="flag">${esc(p.injury)}</span>` : p.missed_last ? ' <span class="flag">missed last game</span>' : ""}` },
+      html: (p) => `${esc(p.name)}${p.injury ? ` <span class="flag">${esc(p.injury)}</span>` : p.missed_last ? ' <span class="flag">missed last game</span>' : ""}${boost(p)}` },
     { label: "Team", get: (p) => p.team },
     { label: "Opp", get: (p) => p.opp },
     { label: "Kickoff", get: (p) => p.kickoff, html: (p) => when(p.kickoff) },
@@ -180,9 +211,14 @@ function renderProps() {
 }
 
 async function loadProps() {
-  $("#props-table").innerHTML = `<div class="empty">Loading…</div>`;
-  state.props = await api(`/api/projections?sport=${state.sport}`);
-  renderProps();
+  $("#props-table").innerHTML = `<div class="empty">Loading${linesView() ? " Kalshi lines and model" : ""}…</div>`;
+  try {
+    if (linesView()) state.propLines = await api(`/api/prop_lines?sport=${state.sport}`);
+    else state.props = await api(`/api/projections?sport=${state.sport}`);
+    renderProps();
+  } catch (e) {
+    $("#props-table").innerHTML = `<div class="empty">Error: ${esc(e.message)}</div>`;
+  }
 }
 
 // ---------------------------------------------------------------- Injuries
@@ -355,6 +391,9 @@ document.querySelectorAll(".sport-toggle button").forEach((b) => {
 $("#edges-reload").onclick = () => loadEdges(true);
 $("#f-view").addEventListener("change", () => loadEdges());
 $("#p-search").addEventListener("input", renderProps);
+$("#p-view").addEventListener("change", loadProps);
+$("#p-main").addEventListener("change", renderProps);
+$("#p-ev").addEventListener("change", renderProps);
 $("#i-search").addEventListener("input", renderInjuries);
 $("#i-out").addEventListener("input", renderInjuries);
 

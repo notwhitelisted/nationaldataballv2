@@ -49,8 +49,11 @@ Every pull is stored, which builds a line-movement history.
 
 ### Injuries and weather in the model
 
-- Players listed Out, Doubtful, IR or suspended are dropped. In the NBA, the minutes of an
-  out rotation player are redistributed to teammates, and those props are flagged "+X min".
+- Players listed Out, Doubtful, IR or suspended are dropped. In the NBA, when a rotation player
+  sits, teammates gain minutes at the rate measured from past absences (bench players gain the
+  most, players over 31 mpg barely any; flagged "+X min"), and their per-minute points and
+  assists rise with the share of team usage that is out (about +16% when a star with ~45% of
+  rotation usage sits; flagged "+X% scoring rate").
 - Questionable and day-to-day players stay in, with their status shown on every edge.
 - NFL outdoor games: each mph of wind above 10 lowers the model total by 0.3 points and
   passing projections by about 1.2%. Domes are ignored. Retractable roofs are assumed to close
@@ -123,8 +126,7 @@ decide what to bet with real money and which market types to ignore.
 ## Roadmap (highest value first)
 
 1. **Faster injury news.** Parse the official NBA injury report PDF, which updates through the
-   day, and NFL inactives about 90 minutes before kickoff. Add usage bumps (not just minutes)
-   when a star sits, and redistribute NFL targets.
+   day, and NFL inactives about 90 minutes before kickoff. Redistribute NFL targets.
 2. **Alternate prop lines.** The Odds API's `*_alternate` markets would price Kalshi's ladders
    directly instead of only near the main line. They cost extra credits.
 3. **Kalshi price snapshots.** Store Kalshi prices over time to measure CLV for every market the

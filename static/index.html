@@ -82,7 +82,18 @@
   </section>
 
   <section id="tab-props" class="tab">
-    <div class="filters"><label>Search <input id="p-search" type="search" placeholder="player or team"></label></div>
+    <div class="filters">
+      <label>View <select id="p-view">
+        <option value="lines">Over/under lines</option>
+        <option value="avg">Projected averages</option>
+      </select></label>
+      <label>Search <input id="p-search" type="search" placeholder="player or team"></label>
+      <span id="p-line-filters">
+        <label><input id="p-main" type="checkbox" checked> Main line only</label>
+        <label><input id="p-ev" type="checkbox"> +EV only</label>
+      </span>
+    </div>
+    <p class="muted small" id="p-lines-note">Kalshi "20+ points" is over 19.5. Over % columns: our model, the sportsbooks (de-vigged; only for games whose props you pulled), and Kalshi's mid price. Pick is the better side after fees.</p>
     <div id="props-table" class="table-wrap"></div>
   </section>
 

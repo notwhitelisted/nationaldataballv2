@@ -139,7 +139,11 @@ def project_nba(hist: pd.DataFrame, env: float, priors: list[dict], season: int)
     cur_min, prev_min = float(np.sum(cw * cur["min"])), float(np.sum(pw * prev["min"]))
     full = h[h["min"] >= 0.6 * proj_min].head(30)
     fw = _decay_weights(len(full), 0.93)
-    out = {"min": proj_min, "games": len(h), "games_this_season": len(cur)}
+    usg = full["fga"] + 0.44 * full["fta"] + full["tov"]
+    usg_min = float(np.sum(fw * full["min"]))
+    out = {"min": proj_min, "games": len(h), "games_this_season": len(cur),
+           # Possessions used per minute (shots, free-throw trips, turnovers).
+           "usg_rate": float(np.sum(fw * usg) / usg_min) if usg_min > 0 else 0.0}
     for s in ("pts", "reb", "ast", "fg3m"):
         prev_rate = (np.sum(pw * prev[s]) + LEAGUE_PRIOR_MIN * league[s]) / (prev_min + LEAGUE_PRIOR_MIN)
         rate = float((np.sum(cw * cur[s]) + CURRENT_SEASON_K * prev_rate) / (cur_min + CURRENT_SEASON_K))
@@ -199,30 +203,52 @@ def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
     return out, index, notes
 
 
-def _apply_nba_injuries(team_proj: dict) -> list[str]:
-    """Drop players ruled out and hand their minutes to healthy teammates.
+# Per-minute rate bump for teammates per unit of rotation usage share sitting out. Fit on
+# 2025-26 box scores (14.6k teammate-games): with ~46% of rotation usage missing, teammates'
+# points and assists per minute rose ~16%, rebounds and threes only ~4%.
+NBA_USAGE_ABSORB = {"pts": 0.33, "ast": 0.30, "reb": 0.08, "fg3m": 0.08}
+# Extra minutes per freed minute, by the teammate's minutes bucket (MIN_BUCKETS). Same data:
+# coaches hand freed minutes to the bench; players already over 31 mpg barely gain any.
+NBA_MIN_ABSORB = (0.11, 0.06, 0.025, 0.02)
+ROTATION_MIN = 20
+MAX_RATE_BOOST = 1.25
 
-    Only minutes from players who were in the rotation (played the team's last game) are
-    redistributed; a player already missing games is already absent from teammates' recent
-    minutes. Minutes go to teammates in proportion to their current role, capped at 40.
-    Per-minute rates stay the same (usage bumps are a known gap).
+
+def _apply_nba_injuries(team_proj: dict) -> list[str]:
+    """Drop players ruled out and hand their minutes and usage to healthy teammates.
+
+    Only players who were in the rotation (played the team's last game) are redistributed;
+    a player already missing games is already absent from teammates' recent numbers.
+    Teammates gain minutes at the measured rate for their role (NBA_MIN_ABSORB, capped at 40;
+    the rest goes to deep bench we don't project). Per-minute rates then rise with the share
+    of rotation usage that is out (NBA_USAGE_ABSORB).
     """
     out_players = [p for p in team_proj.values() if p["injury"] and p["injury"]["out"]]
     notes = [f"{p['team']} {p['injury']['status']}: {p['name']} ({p['min']:.0f} min)"
              for p in out_players if p["min"] >= 15]
-    freed = sum(p["min"] for p in out_players if not p["missed_last"])
+    fresh_out = [p for p in out_players if not p["missed_last"]]
+    freed = sum(p["min"] for p in fresh_out)
+    rotation_usg = sum(p["usg_rate"] * p["min"] for p in team_proj.values() if p["min"] >= ROTATION_MIN)
+    out_usg = sum(p["usg_rate"] * p["min"] for p in fresh_out if p["min"] >= ROTATION_MIN)
+    usg_share = out_usg / rotation_usg if rotation_usg > 0 else 0.0
     for p in out_players:
         del team_proj[p["id"]]
     healthy = list(team_proj.values())
-    total = sum(p["min"] for p in healthy)
-    if freed > 0 and total > 0:
+    if freed > 0:
         for p in healthy:
-            new_min = min(40.0, p["min"] + freed * p["min"] / total)
+            new_min = max(p["min"], min(40.0, p["min"] + freed * NBA_MIN_ABSORB[_min_bucket(p["min"])]))
             scale = new_min / p["min"]
             for s in NBA_STATS:
                 p[s]["mean"] *= scale
             p["min_boost"] = new_min - p["min"]
             p["min"] = new_min
+    if usg_share > 0:
+        boost = {s: min(MAX_RATE_BOOST, 1 + a * usg_share) for s, a in NBA_USAGE_ABSORB.items()}
+        for p in healthy:
+            for s, b in boost.items():
+                p[s]["mean"] *= b
+            p["pra"]["mean"] = p["pts"]["mean"] + p["reb"]["mean"] + p["ast"]["mean"]
+            p["usage_boost"] = boost["pts"] - 1
     return notes
 
 

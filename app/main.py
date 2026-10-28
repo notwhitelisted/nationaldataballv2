@@ -144,6 +144,11 @@ def projections(sport: Sport):
     return edges.projections_view(sport, get_settings())
 
 
+@app.get("/api/prop_lines")
+def prop_lines(sport: Sport):
+    return edges.prop_lines_view(sport, get_settings())
+
+
 @app.get("/api/ratings")
 def ratings(sport: Sport):
     st = edges.sport_state(sport, get_settings())

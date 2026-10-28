@@ -137,6 +137,8 @@ def evaluate_market(m: dict, g: dict, st: dict, settings: dict) -> dict | None:
             flags.append(f"{proj['name']} missed team's last game (check injury report)")
         if proj.get("min_boost", 0) >= 2:
             flags.append(f"+{proj['min_boost']:.0f} min projected (teammate out)")
+        if proj.get("usage_boost", 0) >= 0.03:
+            flags.append(f"+{proj['usage_boost']:.0%} scoring rate (teammate usage out)")
         lines = st["prop_lines"].get(g["id"], {})
         quotes = lines.get((m["player_key"], m["type"])) or lines.get((props.name_key(proj["name"]), m["type"]))
         if quotes:
@@ -328,10 +330,39 @@ def projections_view(sport: str, settings: dict) -> list[dict]:
         row["min"] = p.get("min")
         row["position"] = p.get("position")
         row["injury"] = p["injury"]["status"] if p.get("injury") else None
+        row["min_boost"] = p.get("min_boost", 0)
+        row["usage_boost"] = p.get("usage_boost", 0)
         for s in stats:
             row[s] = p[s]["mean"]
         out.append(row)
     return sorted(out, key=lambda r: (r["kickoff"], r["team"], -(r.get("min") or r.get("pass_yds", 0) + r.get("rec_yds", 0) + r.get("rush_yds", 0))))
+
+
+def prop_lines_view(sport: str, settings: dict) -> list[dict]:
+    """Every priced Kalshi player prop as an over/under line: projection vs line, model,
+    sportsbook and Kalshi over probabilities, and the better side to bet. Each player + stat
+    ladder marks its main line (Kalshi price nearest 50/50)."""
+    rows = [r for r in edges(sport, settings) if r["player"]]
+    out = []
+    for r in rows:
+        line = math.floor(r["strike"]) + 0.5
+        out.append({
+            "ticker": r["ticker"], "game": r["game"], "kickoff": r["kickoff"],
+            "name": r["player"]["name"], "player_id": r["player"]["id"],
+            "type": r["type"], "type_label": r["type_label"], "line": line,
+            "proj": r["player"]["mean"], "diff": r["player"]["mean"] - line,
+            "model_over": r["model_prob"], "book_over": r["book_prob"], "kalshi_over": r["kalshi_mid"],
+            "fair_over": r["fair_prob"], "side": r["side"], "price": r["price"], "side_prob": r["side_prob"],
+            "roi": r["roi"], "spread": r["spread"], "flags": r["flags"], "main": False,
+        })
+    ladders: dict = {}
+    for row in out:
+        # A wide or one-sided book's mid isn't a real price, so it can't anchor the main line.
+        if row["kalshi_over"] is not None and row["spread"] is not None and row["spread"] <= 0.10:
+            ladders.setdefault((row["player_id"], row["type"], row["game"]), []).append(row)
+    for rungs in ladders.values():
+        min(rungs, key=lambda x: abs(x["kalshi_over"] - 0.5))["main"] = True
+    return sorted(out, key=lambda x: (x["kickoff"], x["game"], x["name"], x["type"], x["line"]))
 
 
 def kickoff_for(ticker: str, settings: dict) -> str | None:

@@ -221,3 +221,34 @@ def test_paper_lines_freshness():
     assert lines_fresh((now - timedelta(hours=2)).isoformat())
     assert not lines_fresh((now - timedelta(hours=13)).isoformat())
     assert not lines_fresh(None)
+
+
+def _nba_proj(pid, minutes, usg_rate, out=False, missed_last=False):
+    stats = {s: {"mean": 10.0, "disp": 1.5} for s in ("pts", "reb", "ast", "fg3m")}
+    return {"id": pid, "name": pid, "team": "IND", "min": minutes, "usg_rate": usg_rate, "missed_last": missed_last,
+            "injury": {"out": True, "status": "Out"} if out else None, **stats, "pra": {"mean": 30.0, "disp": 3.2}}
+
+
+def test_nba_injury_hands_out_minutes_and_usage():
+    from app.models.props import NBA_USAGE_ABSORB, _apply_nba_injuries
+    # Star (40% of rotation usage) out: teammates get some of his minutes and a scoring-rate bump.
+    team = {"star": _nba_proj("star", 30, 0.6, out=True), "a": _nba_proj("a", 30, 0.3),
+            "bench": _nba_proj("bench", 10, 0.3), "b": _nba_proj("b", 30, 0.3)}
+    notes = _apply_nba_injuries(team)
+    assert "star" not in team and notes == ["IND Out: star (30 min)"]
+    a = team["a"]
+    assert a["min"] == pytest.approx(30.75)  # 24-31 mpg players gain 0.025 per freed minute
+    assert team["bench"]["min"] == pytest.approx(13.3)  # the bench gains most
+    share = 0.6 * 30 / (0.6 * 30 + 0.3 * 30 * 2)
+    assert a["usage_boost"] == pytest.approx(NBA_USAGE_ABSORB["pts"] * share)
+    assert a["pts"]["mean"] == pytest.approx(10 * 30.75 / 30 * (1 + NBA_USAGE_ABSORB["pts"] * share))
+    assert a["reb"]["mean"] < a["pts"]["mean"]  # rebounds barely follow usage
+    assert a["pra"]["mean"] == pytest.approx(a["pts"]["mean"] + a["reb"]["mean"] + a["ast"]["mean"])
+
+
+def test_nba_injury_already_missing_changes_nothing():
+    from app.models.props import _apply_nba_injuries
+    # Out for weeks: teammates' recent games already reflect it.
+    team = {"x": _nba_proj("x", 30, 0.6, out=True, missed_last=True), "a": _nba_proj("a", 30, 0.3)}
+    _apply_nba_injuries(team)
+    assert team["a"]["pts"]["mean"] == 10.0 and "usage_boost" not in team["a"]
