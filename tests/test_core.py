@@ -252,3 +252,15 @@ def test_nba_injury_already_missing_changes_nothing():
     team = {"x": _nba_proj("x", 30, 0.6, out=True, missed_last=True), "a": _nba_proj("a", 30, 0.3)}
     _apply_nba_injuries(team)
     assert team["a"]["pts"]["mean"] == 10.0 and "usage_boost" not in team["a"]
+
+
+def test_nba_roles_and_defense_mult():
+    from app.models.props import NBA_DEF_EXP, nba_defense_mult, nba_role
+    assert nba_role(0.35, 0.05) == "big"
+    assert nba_role(0.12, 0.25) == "guard"
+    assert nba_role(0.18, 0.10) == "wing"
+    dfac = {"reb": {"big": 1.10}, "ast": {}, "fg3m": 2.0}
+    assert nba_defense_mult(dfac, "reb", "big") == pytest.approx(1.10 ** NBA_DEF_EXP["reb"])
+    assert nba_defense_mult(dfac, "reb", "guard") == 1.0  # no data for that role
+    assert nba_defense_mult(dfac, "fg3m", "wing") == pytest.approx(1.15 ** NBA_DEF_EXP["fg3m"])  # clipped
+    assert nba_defense_mult({}, "ast", "guard") == 1.0

@@ -2,7 +2,8 @@
 
 Approach (deliberately simple and transparent):
   * NBA: project minutes from recent games, multiply by recency-weighted per-minute rates,
-    then scale by the game environment (our projected team points vs the team's norm).
+    then scale by the game environment (our projected team points vs the team's norm) and,
+    lightly, by what the opponent allows in rebounds/assists to the player's role and in threes.
   * NFL: recency-weighted per-game averages, scaled by how much the opponent allows
     relative to league average (shrunk halfway to 1.0).
   * Outcomes are modelled as negative binomial counts with the player's own dispersion
@@ -92,6 +93,63 @@ def nba_team_points_norm(pg: pd.DataFrame) -> dict:
     return out
 
 
+# Opponent defense beyond the scoring environment. Walk-forward test on 2025-26 (fit first
+# half, scored second): rebounds and assists follow what the opponent allows to the player's
+# role, threes what it allows relative to its points allowed. Each cut holdout deviance only
+# ~0.3%; points gained nothing beyond the environment, and neither did pace.
+NBA_DEF_WINDOW = 30
+NBA_DEF_EXP = {"reb": 0.15, "ast": 0.20, "fg3m": 0.55}
+NBA_DEF_CLIP = (0.85, 1.15)
+
+
+def nba_role(reb_pm: float, ast_pm: float) -> str:
+    if reb_pm >= 0.25 and ast_pm < 0.12:
+        return "big"
+    return "guard" if ast_pm >= 0.15 else "wing"
+
+
+def _player_roles(pg: pd.DataFrame) -> pd.Series:
+    """Role per player from their last NBA_DEF_WINDOW games (pg sorted most recent first)."""
+    recent = pg.groupby("player_id").head(NBA_DEF_WINDOW)
+    tot = recent.groupby("player_id")[["reb", "ast", "min"]].sum()
+    tot = tot[tot["min"] > 0]
+    return pd.Series([nba_role(r.reb / r.min, r.ast / r.min) for r in tot.itertuples()], index=tot.index)
+
+
+def nba_defense_factors(pg: pd.DataFrame) -> dict:
+    """{team: {"reb": {role: f}, "ast": {role: f}, "fg3m": f}} multipliers for opponents of
+    `team` vs league average, over each defense's last NBA_DEF_WINDOW games (pg most recent first)."""
+    pg = pg.assign(role=pg["player_id"].map(_player_roles(pg)))
+    games = pg[["opp", "game_id", "date"]].drop_duplicates().sort_values("date", ascending=False)
+    recent = games.groupby("opp").head(NBA_DEF_WINDOW)[["opp", "game_id"]]
+    allowed = pg.merge(recent, on=["opp", "game_id"])
+    by_role = allowed.groupby(["opp", "role"])[["reb", "ast", "min"]].sum()
+    league_role = allowed.groupby("role")[["reb", "ast", "min"]].sum()
+    per_game = allowed.groupby(["opp", "game_id"])[["pts", "fg3m"]].sum().groupby("opp").mean()
+    lg_pts, lg_3 = per_game["pts"].mean(), per_game["fg3m"].mean()
+    out = {}
+    for team, g in per_game.iterrows():
+        f = {"fg3m": (g["fg3m"] / lg_3) / (g["pts"] / lg_pts)}
+        for s in ("reb", "ast"):
+            f[s] = {}
+            for role, lr in league_role.iterrows():
+                if (team, role) in by_role.index:
+                    r = by_role.loc[(team, role)]
+                    if r["min"] > 0:
+                        f[s][role] = (r[s] / r["min"]) / (lr[s] / lr["min"])
+        out[team] = f
+    return out
+
+
+def nba_defense_mult(dfac: dict, stat: str, role: str) -> float:
+    f = dfac.get(stat)
+    if isinstance(f, dict):
+        f = f.get(role)
+    if not f:
+        return 1.0
+    return float(np.clip(f, *NBA_DEF_CLIP) ** NBA_DEF_EXP[stat])
+
+
 # Minutes of current-season play needed before it outweighs the player's prior-season rate.
 CURRENT_SEASON_K = 200
 # Minutes of league-average play mixed into a prior-season rate (dominates only for rookies).
@@ -167,6 +225,8 @@ def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
     index = PlayerIndex(latest)
     norms = nba_team_points_norm(pg)
     priors = nba_rate_priors(pg)
+    dfacs = nba_defense_factors(pg)
+    roles = _player_roles(pg)
     season = current_nba_season()
     team_last_game = pg.groupby("team")["date"].max()
     by_player = dict(tuple(pg.groupby("player_id")))
@@ -188,10 +248,14 @@ def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
                 # Skip players who haven't played in a long while (injured / waived).
                 if (team_last_game.get(team, last) - last).days > 21:
                     continue
+                role = roles.get(pid, "wing")
+                for s in NBA_DEF_EXP:
+                    proj[s]["mean"] *= nba_defense_mult(dfacs.get(g[opp], {}), s, role)
+                proj["pra"]["mean"] = proj["pts"]["mean"] + proj["reb"]["mean"] + proj["ast"]["mean"]
                 name = hist["name"].iloc[0]
                 proj.update({
                     "id": pid, "name": name, "team": team, "opp": g[opp], "game_id": g["id"],
-                    "kickoff": g["kickoff"], "env": env,
+                    "kickoff": g["kickoff"], "env": env, "role": role,
                     "missed_last": bool(last < team_last_game.get(team, last)),
                     "last_played": last.date().isoformat(),
                     "injury": injury_of(team, name, pid) if injury_of else None,
