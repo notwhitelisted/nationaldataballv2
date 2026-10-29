@@ -77,6 +77,12 @@ one input, not the truth.
   then last season, then this season), scaled by the projected game environment.
 - NFL: recency-weighted per-game averages × an opponent-allowed factor.
 - Probabilities come from negative binomial distributions with each player's own variance.
+- NBA props backtest (Model tab → Run props backtest, [props_backtest.py](app/models/props_backtest.py)):
+  every past game day is replayed with the live projection code using only earlier box scores,
+  and each projection is scored on Kalshi-style ladders against a last-20-games hit rate. It
+  found the model over-projected (minutes ~1.2 high, points ~7% high, so overs were ~5 points too
+  likely); the calibration constants in props.py were fit on the first half of 2025-26 and checked
+  on the second. Players who didn't play count as ruled out, so availability is perfect there.
 
 **Edges** ([app/edges.py](app/edges.py)). For each open Kalshi market whose game hasn't started, the app
 computes the EV of buying YES at the ask or NO at (1 − bid), after the taker fee. Notes flag known

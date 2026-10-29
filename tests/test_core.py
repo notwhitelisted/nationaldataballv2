@@ -264,3 +264,23 @@ def test_nba_roles_and_defense_mult():
     assert nba_defense_mult(dfac, "reb", "guard") == 1.0  # no data for that role
     assert nba_defense_mult(dfac, "fg3m", "wing") == pytest.approx(1.15 ** NBA_DEF_EXP["fg3m"])  # clipped
     assert nba_defense_mult({}, "ast", "guard") == 1.0
+
+
+def test_props_backtest_summary_scores_calibrated_model_above_noise():
+    import numpy as np
+    import pandas as pd
+    from app.models.props_backtest import summarize
+    rng = np.random.default_rng(0)
+    n = 4000
+    p_true = rng.uniform(0.1, 0.9, n)
+    hit = rng.uniform(size=n) < p_true
+    df = pd.DataFrame({
+        "date": pd.Timestamp("2026-01-01"), "season": 2026, "player_id": np.arange(n) // 4, "game_id": "g",
+        "stat": "pts", "k": 10, "mean": 12.0, "actual": np.where(hit, 15.0, 5.0),
+        "p_model": p_true, "p_base": np.clip(p_true + rng.normal(0, 0.2, n), 0.02, 0.98), "hit": hit,
+        "proj_min": 30.0, "min": 31.0,
+    })
+    s = summarize(df)
+    assert s["overall"]["skill_vs_base"] > 0
+    assert s["minutes"]["bias"] == 1.0
+    assert all(abs(c["pred"] - c["actual"]) < 0.06 for c in s["calibration"])

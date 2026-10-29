@@ -152,9 +152,20 @@ def nba_defense_mult(dfac: dict, stat: str, role: str) -> float:
 
 # Minutes of current-season play needed before it outweighs the player's prior-season rate.
 CURRENT_SEASON_K = 200
+# Calibration from the walk-forward props backtest (props_backtest.py; fit on the first half of
+# 2025-26, checked on the second). Recent minutes averages include games with teammates out, so
+# a full roster plays its regulars a bit less; per-minute rates ran high (stars most); and the
+# points / PRA spread was too narrow in the tails (scales the variance above Poisson).
+NBA_MIN_SCALE = 0.967
+NBA_RATE_SCALE = {"pts": 0.967, "reb": 0.993, "ast": 0.985, "fg3m": 0.986}
+NBA_DISP_SCALE = {"pts": 1.3, "pra": 1.3}
 # Minutes of league-average play mixed into a prior-season rate (dominates only for rookies).
 LEAGUE_PRIOR_MIN = 90
 MIN_BUCKETS = (15, 24, 31)
+
+
+def _widen(disp: float, stat: str) -> float:
+    return 1 + (disp - 1) * NBA_DISP_SCALE.get(stat, 1.0)
 
 
 def _min_bucket(minutes: float) -> int:
@@ -188,7 +199,7 @@ def project_nba(hist: pd.DataFrame, env: float, priors: list[dict], season: int)
     # Minutes: current season dominates once it exists (roles change between seasons).
     recent = h.head(12)
     mw = _decay_weights(len(recent), 0.8) * np.where(cur_mask[:len(recent)], 1.0, 0.15)
-    proj_min = float(np.average(recent["min"], weights=mw))
+    proj_min = float(np.average(recent["min"], weights=mw)) * NBA_MIN_SCALE
     if proj_min <= 0:
         return None
     league = priors[_min_bucket(proj_min)]
@@ -205,20 +216,21 @@ def project_nba(hist: pd.DataFrame, env: float, priors: list[dict], season: int)
     for s in ("pts", "reb", "ast", "fg3m"):
         prev_rate = (np.sum(pw * prev[s]) + LEAGUE_PRIOR_MIN * league[s]) / (prev_min + LEAGUE_PRIOR_MIN)
         rate = float((np.sum(cw * cur[s]) + CURRENT_SEASON_K * prev_rate) / (cur_min + CURRENT_SEASON_K))
-        mean = rate * proj_min * env ** NBA_ENV_EXP[s]
-        out[s] = {"mean": mean, "disp": _dispersion(full[s].to_numpy(float), fw, NBA_DISPERSION[s])}
+        mean = rate * NBA_RATE_SCALE[s] * proj_min * env ** NBA_ENV_EXP[s]
+        out[s] = {"mean": mean, "disp": _widen(_dispersion(full[s].to_numpy(float), fw, NBA_DISPERSION[s]), s)}
     out["pra"] = {
         "mean": out["pts"]["mean"] + out["reb"]["mean"] + out["ast"]["mean"],
-        "disp": _dispersion(full["pra"].to_numpy(float), fw, NBA_DISPERSION["pra"]),
+        "disp": _widen(_dispersion(full["pra"].to_numpy(float), fw, NBA_DISPERSION["pra"]), "pra"),
     }
     return out
 
 
-def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None) -> tuple[dict, PlayerIndex, dict]:
+def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None, season: int | None = None) -> tuple[dict, PlayerIndex, dict]:
     """Project every player on a team in `games` (upcoming game predictions).
 
-    injury_of(team, name, player_id) -> injury dict or None. Returns (projections keyed by
-    (player_id, game_id), name index, {game_id: [injury notes]}).
+    injury_of(team, name, player_id) -> injury dict or None. season defaults to the current one
+    (the backtest passes the replayed game's). Returns (projections keyed by (player_id, game_id),
+    name index, {game_id: [injury notes]}).
     """
     pg = pg.sort_values("date", ascending=False)
     latest = pg.drop_duplicates("player_id")[["player_id", "name", "team"]].rename(columns={"player_id": "id"})
@@ -227,7 +239,7 @@ def nba_projections(pg: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
     priors = nba_rate_priors(pg)
     dfacs = nba_defense_factors(pg)
     roles = _player_roles(pg)
-    season = current_nba_season()
+    season = season or current_nba_season()
     team_last_game = pg.groupby("team")["date"].max()
     by_player = dict(tuple(pg.groupby("player_id")))
     out, notes = {}, {}
@@ -275,6 +287,9 @@ NBA_USAGE_ABSORB = {"pts": 0.33, "ast": 0.30, "reb": 0.08, "fg3m": 0.08}
 # coaches hand freed minutes to the bench; players already over 31 mpg barely gain any.
 NBA_MIN_ABSORB = (0.11, 0.06, 0.025, 0.02)
 ROTATION_MIN = 20
+# Only absences of players this big free minutes (the minutes study measured 15+ mpg absences;
+# a deep-bench player sitting is just the coach shortening the bench).
+FREED_MIN = 15
 MAX_RATE_BOOST = 1.25
 
 
@@ -291,7 +306,7 @@ def _apply_nba_injuries(team_proj: dict) -> list[str]:
     notes = [f"{p['team']} {p['injury']['status']}: {p['name']} ({p['min']:.0f} min)"
              for p in out_players if p["min"] >= 15]
     fresh_out = [p for p in out_players if not p["missed_last"]]
-    freed = sum(p["min"] for p in fresh_out)
+    freed = sum(p["min"] for p in fresh_out if p["min"] >= FREED_MIN)
     rotation_usg = sum(p["usg_rate"] * p["min"] for p in team_proj.values() if p["min"] >= ROTATION_MIN)
     out_usg = sum(p["usg_rate"] * p["min"] for p in fresh_out if p["min"] >= ROTATION_MIN)
     usg_share = out_usg / rotation_usg if rotation_usg > 0 else 0.0

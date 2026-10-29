@@ -329,6 +329,7 @@ async function loadModel() {
       </tbody></table></div>`;
     el.innerHTML = html;
   }
+  loadPropsBacktest();
   if (rt.teams) {
     table($("#model-ratings"), [
       { label: "Team", get: (t) => t.team },
@@ -337,6 +338,59 @@ async function loadModel() {
       { label: "Defense", num: true, get: (t) => t.def, html: (t) => signed(t.def) },
     ], rt.teams, "ratings");
   }
+}
+
+const STAT_NAMES = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast" };
+
+async function loadPropsBacktest() {
+  const el = $("#model-props-bt");
+  if (state.sport !== "nba") {
+    el.innerHTML = "";
+    return;
+  }
+  const { running, result: r } = await api("/api/backtest/props");
+  const button = `<button id="props-bt-run" ${running ? "disabled" : ""}>${running ? "Running… (a few minutes)" : r ? "Re-run" : "Run props backtest"}</button>`;
+  let html = `<h3>Player props backtest</h3>
+    <p class="muted small">Every past game day is replayed with the live projection code, using only earlier box scores, and each
+    projection is scored on Kalshi-style ladders (10+/15+/20+ points, …). Baseline = the player's hit rate over their last 20 games.
+    Players who didn't play count as ruled out, so availability is known perfectly here. ${button}</p>`;
+  if (r && !r.error) {
+    const card = (k, v) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
+    const o = r.overall, m = r.main_lines;
+    html += `<p class="muted small">${r.games} games, ${r.player_games.toLocaleString()} player-games, ${r.predictions.toLocaleString()} predictions (${r.from} → ${r.to}). Run ${when(r.run_at)}.</p>
+      <div class="cards">
+        ${card("Brier: model / baseline", `${num(o.brier_model, 4)} / ${num(o.brier_base, 4)}`)}
+        ${card("Better than baseline by", pct(o.skill_vs_base))}
+        ${card("Main lines (35–65%): model / baseline", `${num(m.brier_model, 4)} / ${num(m.brier_base, 4)}`)}
+        ${card("Minutes error (avg)", num(r.minutes.mae, 1))}
+        ${card("Minutes bias (actual − proj)", signed(r.minutes.bias))}
+      </div>
+      <h3>By stat</h3><div class="table-wrap" id="props-bt-stats"></div>
+      <h3>Calibration (all rungs)</h3><div class="table-wrap"><table><thead><tr><th class="num">Model said</th><th class="num">Actually hit</th><th class="num">Predictions</th></tr></thead><tbody>
+      ${r.calibration.map((c) => `<tr><td class="num">${pct(c.pred)}</td><td class="num">${pct(c.actual)}</td><td class="num">${c.n.toLocaleString()}</td></tr>`).join("")}
+      </tbody></table></div>`;
+  } else if (r && r.error) {
+    html += `<div class="empty">${esc(r.error)}</div>`;
+  }
+  el.innerHTML = html;
+  if (r && !r.error) {
+    table($("#props-bt-stats"), [
+      { label: "Stat", get: (s) => STAT_NAMES[s.stat] || s.stat },
+      { label: "Player-games", num: true, get: (s) => s.player_games, html: (s) => s.player_games.toLocaleString() },
+      { label: "Avg proj", num: true, get: (s) => s.proj, html: (s) => num(s.proj) },
+      { label: "Avg actual", num: true, get: (s) => s.actual, html: (s) => num(s.actual) },
+      { label: "Bias (actual − proj)", num: true, get: (s) => s.bias, html: (s) => signed(s.bias, 2) },
+      { label: "Avg error", num: true, get: (s) => s.mae, html: (s) => num(s.mae, 2) },
+      { label: "Brier model", num: true, get: (s) => s.brier_model, html: (s) => num(s.brier_model, 4) },
+      { label: "Brier baseline", num: true, get: (s) => s.brier_base, html: (s) => num(s.brier_base, 4) },
+      { label: "Better by", num: true, get: (s) => s.skill_vs_base, html: (s) => pct(s.skill_vs_base) },
+    ], r.by_stat, "props-bt-stats");
+  }
+  $("#props-bt-run").onclick = async () => {
+    await api("/api/backtest/props", { method: "POST" });
+    loadPropsBacktest();
+  };
+  if (running) setTimeout(() => state.tab === "model" && state.sport === "nba" && loadPropsBacktest(), 15000);
 }
 
 // ---------------------------------------------------------------- Settings

@@ -12,8 +12,9 @@ from pydantic import BaseModel
 from . import bets, edges, paper
 from .config import STATIC_DIR
 from .data import injuries, kalshi_account, nba, nfl, odds
-from .db import get_meta, get_settings, init_db, save_settings
+from .db import get_meta, get_settings, init_db, save_settings, set_meta
 from .models import games as gm
+from .models import props_backtest
 
 Sport = Literal["nfl", "nba"]
 
@@ -162,6 +163,37 @@ def ratings(sport: Sport):
 @app.get("/api/backtest")
 def backtest(sport: Sport):
     return gm.backtest(sport)
+
+
+props_bt = {"running": False}
+
+
+def _run_props_backtest() -> None:
+    try:
+        res = props_backtest.backtest_nba(log=_log)
+        res["run_at"] = datetime.now().isoformat(timespec="seconds")
+        set_meta("props_backtest_nba", res)
+    except Exception as e:
+        _log(f"Props backtest failed: {e}")
+        traceback.print_exc()
+    finally:
+        props_bt["running"] = False
+
+
+@app.get("/api/backtest/props")
+def props_backtest_get():
+    """Last saved NBA props backtest (it takes minutes, so it runs on request, not per page load)."""
+    return {"running": props_bt["running"], "result": get_meta("props_backtest_nba")}
+
+
+@app.post("/api/backtest/props")
+def props_backtest_run():
+    with job_lock:
+        if props_bt["running"]:
+            return {"started": False}
+        props_bt["running"] = True
+    threading.Thread(target=_run_props_backtest, daemon=True).start()
+    return {"started": True}
 
 
 class BetIn(BaseModel):
