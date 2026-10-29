@@ -295,6 +295,7 @@ async function loadBets() {
 async function loadModel() {
   const el = $("#model-backtest");
   el.innerHTML = `<div class="empty">Running walk-forward backtest…</div>`;
+  loadPropsBacktest().catch((e) => ($("#model-props-bt").innerHTML = `<div class="empty">Props backtest: ${esc(e.message)}</div>`));
   const [bt, rt] = await Promise.all([api(`/api/backtest?sport=${state.sport}`), api(`/api/ratings?sport=${state.sport}`)]);
   if (bt.error) {
     el.innerHTML = `<div class="empty">${esc(bt.error)}</div>`;
@@ -329,7 +330,6 @@ async function loadModel() {
       </tbody></table></div>`;
     el.innerHTML = html;
   }
-  loadPropsBacktest();
   if (rt.teams) {
     table($("#model-ratings"), [
       { label: "Team", get: (t) => t.team },
@@ -345,7 +345,7 @@ const STAT_NAMES = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Thre
 async function loadPropsBacktest() {
   const el = $("#model-props-bt");
   if (state.sport !== "nba") {
-    el.innerHTML = "";
+    el.innerHTML = `<h3>Player props backtest</h3><p class="muted small">NBA only for now: switch to NBA at the top to see it.</p>`;
     return;
   }
   const { running, result: r } = await api("/api/backtest/props");
