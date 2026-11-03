@@ -49,7 +49,7 @@ def settle(bet_id: int, status: str) -> None:
             _apply_settlement(conn, dict(b), status)
 
 
-def _apply_settlement(conn, b: dict, status: str) -> None:
+def _apply_settlement(conn, b: dict, status: str, payout: float | None = None) -> None:
     held = b["contracts"] - (b["sold_contracts"] or 0)
     cost = b["contracts"] * b["price"] + b["fees"]
     proceeds = b["sell_proceeds"] or 0.0
@@ -58,7 +58,7 @@ def _apply_settlement(conn, b: dict, status: str) -> None:
     elif status == "lost":
         pnl = proceeds - cost
     elif status == "void":
-        pnl = 0.0
+        pnl = 0.0 if payout is None else proceeds + held * payout - cost
     else:
         pnl, status = None, "open"
     conn.execute("UPDATE bets SET status = ?, pnl = ?, settled_at = ? WHERE id = ?",
@@ -89,6 +89,15 @@ def sync() -> dict:
                 continue
             if result == "void":
                 _apply_settlement(conn, b, "void")
+                settled += 1
+                continue
+            if result == "scalar":
+                # Kalshi's no-contest settlement (e.g. player DNP): pays a fixed value per YES contract.
+                try:
+                    value = float(m.get("settlement_value_dollars"))
+                except (TypeError, ValueError):
+                    continue
+                _apply_settlement(conn, b, "void", payout=value if b["side"] == "yes" else 1 - value)
                 settled += 1
                 continue
             # Before kickoff, keep recording the price so the last value is our closing line.
