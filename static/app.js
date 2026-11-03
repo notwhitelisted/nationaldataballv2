@@ -18,7 +18,7 @@ const signed = (x, d = 1) => (x == null ? "–" : (x > 0 ? "+" : "") + Number(x)
 const spreadText = (home, away, m) => (m == null ? "–" : Math.abs(m) < 0.05 ? "PK" : `${m > 0 ? home : away} -${Math.abs(m).toFixed(1)}`);
 const flags = (fs) => (fs || []).map((f) => `<span class="flag">${esc(f)}</span>`).join("");
 
-/** Render a sortable table. cols: [{label, get, html?, num?}] */
+/** Render a sortable table. cols: [{label, get, html?, num?, wrap?}] */
 function table(el, cols, rows, key) {
   const s = state.sort[key];
   const sorted = s
@@ -36,7 +36,7 @@ function table(el, cols, rows, key) {
   }
   const head = cols.map((c, i) => `<th data-i="${i}" class="${c.num ? "num" : ""}">${c.label}${s && s.i === i ? (s.dir > 0 ? " ▲" : " ▼") : ""}</th>`).join("");
   const body = sorted
-    .map((r, ri) => `<tr data-ri="${ri}">${cols.map((c) => `<td class="${c.num ? "num" : ""}">${c.html ? c.html(r) : esc(c.get(r))}</td>`).join("")}</tr>`)
+    .map((r, ri) => `<tr data-ri="${ri}">${cols.map((c) => `<td class="${c.num ? "num" : c.wrap ? "wrap" : ""}">${c.html ? c.html(r) : esc(c.get(r))}</td>`).join("")}</tr>`)
     .join("");
   el.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
   el.querySelectorAll("th").forEach((th) => {
@@ -114,7 +114,7 @@ function renderEdges() {
       { label: "Max price", num: true, get: (r) => r.max_price, html: (r) => `<b>${cents(r.max_price)}</b>` },
     ] : []),
     { label: "Stake", num: true, get: (r) => r.stake.stake, html: (r) => `${money(r.stake.stake)} <span class="muted small">(${r.stake.contracts})</span>` },
-    { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags) },
+    { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags), wrap: true },
     { label: "", get: () => 0, html: (r) => `<button data-log="${esc(r.ticker)}">Log</button> <button data-paper="${esc(r.ticker)}" title="Record a no-money test bet at this price">Paper</button>` },
   ], sl ? shortlistRows() : filteredEdges(), sl ? "shortlist" : "edges");
 }
@@ -151,7 +151,7 @@ async function loadGames() {
     { label: "book", num: true, get: (g) => g.book.home_win, html: (g) => pct(g.book.home_win) },
     { label: "Kalshi", num: true, get: (g) => g.kalshi_home_win, html: (g) => pct(g.kalshi_home_win) },
     ...(state.sport === "nfl" ? [{ label: "Weather", get: (g) => g.weather?.wind_mph, html: (g) => esc(g.weather?.text || "–") }] : []),
-    { label: "Notes", get: (g) => g.flags.length, html: (g) => flags(g.flags) },
+    { label: "Notes", get: (g) => g.flags.length, html: (g) => flags(g.flags), wrap: true },
     { label: "", get: () => 0, html: (g) => (g.odds_event_id && state.odds?.enabled
         ? `<button data-props="${esc(g.odds_event_id)}" title="Pull sportsbook player props for this game">Props (${state.odds.prop_cost[state.sport]} cr)</button>` : "") },
   ], rows, "games");
@@ -181,7 +181,7 @@ function renderPropLines() {
     { label: "Over % Kalshi", num: true, get: (r) => r.kalshi_over, html: (r) => pct(r.kalshi_over) },
     { label: "Pick", get: (r) => side(r), html: (r) => `<span class="side-${r.side}">${side(r)}</span> ${cents(r.price)} <span class="muted small">(${pct(r.side_prob, 0)} to hit)</span>` },
     { label: "EV", num: true, get: (r) => r.roi, html: (r) => `<span class="${r.roi > 0 ? "pos" : "neg"}">${pct(r.roi)}</span>` },
-    { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags) },
+    { label: "Notes", get: (r) => r.flags.length, html: (r) => flags(r.flags), wrap: true },
   ], rows, `lines-${state.sport}`);
 }
 
