@@ -129,7 +129,9 @@ def evaluate_market(m: dict, g: dict, st: dict, settings: dict) -> dict | None:
         model_p = props.prob_at_least(proj, m["type"], k)
         if model_p is None:
             return None
-        player = {"id": pid, "name": proj["name"], "mean": proj[m["type"]]["mean"], "min": proj.get("min")}
+        player = {"id": pid, "name": proj["name"], "mean": proj[m["type"]]["mean"], "min": proj.get("min"),
+                  "min_boost": proj.get("min_boost", 0.0), "usage_boost": proj.get("usage_boost", 0.0),
+                  "carry_boost": proj.get("carry_boost", 0.0)}
         inj = proj.get("injury")
         if inj:
             flags.append(f"{inj['status']}: {inj['comment'][:90]}")
@@ -216,6 +218,19 @@ def edges(sport: str, settings: dict, force: bool = False) -> list[dict]:
             rows.append(r)
     rows.sort(key=lambda r: -r["roi"])
     return rows
+
+
+# A projection boosted this much by a teammate being out is the spot where prices may lag the news.
+BOOST_MIN, BOOST_USAGE, BOOST_CARRIES = 3.0, 0.05, 2.0
+
+
+def situation_tags(r: dict) -> str:
+    tags = []
+    p = r["player"]
+    if p and (p["min_boost"] >= BOOST_MIN or p["usage_boost"] >= BOOST_USAGE or p["carry_boost"] >= BOOST_CARRIES):
+        tags.append("teammate out")
+    tags.append("book line" if r["book_prob"] is not None else "Kalshi only")
+    return ", ".join(tags)
 
 
 def ladder_key(r: dict) -> str:

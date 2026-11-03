@@ -14,7 +14,8 @@ def _now() -> str:
 
 
 INSERT_COLS = ["created_at", "sport", "ticker", "description", "side", "price", "contracts", "fees", "fair_prob",
-               "game_start", "notes", "mode", "source", "ext_id", "market_type", "edge"]
+               "game_start", "notes", "mode", "source", "ext_id", "market_type", "edge",
+               "model_prob", "book_prob", "tags"]
 
 
 def create(b: dict, fee_coef: float) -> dict:
@@ -259,6 +260,7 @@ def list_bets(mode: str = "real") -> dict:
         "Strategy": lambda r: SOURCE_LABELS.get(r["source"] or "manual", r["source"]),
         "Edge at bet": lambda r: _edge_bucket(r["edge"]),
         "Price": lambda r: _price_bucket(r["price"]),
+        "Situation": lambda r: r["tags"] or "untagged",
     }
     breakdown = {}
     for name, keyf in groupings.items():

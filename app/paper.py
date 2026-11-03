@@ -11,17 +11,20 @@ import traceback
 
 from . import bets, edges
 from .edges import ladder_key
-from .db import get_settings
+from .db import get_settings, session
 
 INTERVAL_SECONDS = 15 * 60
 MAX_SPREAD = 0.06
+# Long shots were the model's worst calibration: auto paper bets under 15c won 1 of 42
+# against ~6 expected. Keep the all-edges book in the range where streaks stay survivable.
+PRICE_RANGE = (0.25, 0.85)
 # Shortlist picks lean on sportsbook prices; don't paper-bet off lines older than this.
 MAX_LINE_AGE_HOURS = 12
 
 
 def qualifies(r: dict, min_edge: float) -> bool:
     return (r["roi"] >= min_edge
-            and 0.10 <= r["price"] <= 0.90
+            and PRICE_RANGE[0] <= r["price"] <= PRICE_RANGE[1]
             and r["spread"] is not None and r["spread"] <= MAX_SPREAD
             and not any(f.startswith("Model far from market") for f in r["flags"]))
 
@@ -36,7 +39,34 @@ def record(r: dict, settings: dict, source: str, prefix: str = "paper") -> dict 
         "side": r["side"], "price": r["price"], "contracts": max(1, r["stake"]["contracts"]),
         "fair_prob": r["side_prob"], "game_start": r["kickoff"], "mode": "paper", "source": source,
         "market_type": r["type"], "edge": r["roi"],
+        "model_prob": r["model_prob"], "book_prob": r["book_prob"], "tags": edges.situation_tags(r),
     }, settings["kalshi_fee_coef"])
+
+
+_last_snap: dict[str, tuple] = {}
+SNAPSHOT_COLS = ["taken_at", "sport", "ticker", "market_type", "game_id", "kickoff", "strike", "yes_bid", "yes_ask",
+                 "model_prob", "book_prob", "fair_prob", "player_id", "proj_mean", "min_boost", "usage_boost",
+                 "carry_boost"]
+
+
+def snapshot(sport: str, settings: dict) -> int:
+    """Record every priced market whose price or probabilities moved since its last snapshot."""
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows = []
+    for r in edges.edges(sport, settings):
+        p = r["player"] or {}
+        state = (r["yes_bid"], r["yes_ask"], round(r["model_prob"], 3),
+                 None if r["book_prob"] is None else round(r["book_prob"], 3))
+        if _last_snap.get(r["ticker"]) == state:
+            continue
+        _last_snap[r["ticker"]] = state
+        rows.append((now, sport, r["ticker"], r["type"], r["game_id"], r["kickoff"], r["strike"],
+                     r["yes_bid"], r["yes_ask"], r["model_prob"], r["book_prob"], r["fair_prob"],
+                     p.get("id"), p.get("mean"), p.get("min_boost"), p.get("usage_boost"), p.get("carry_boost")))
+    with session() as conn:
+        conn.executemany(f"INSERT INTO market_snapshots ({', '.join(SNAPSHOT_COLS)}) "
+                         f"VALUES ({', '.join('?' * len(SNAPSHOT_COLS))})", rows)
+    return len(rows)
 
 
 def run_once() -> dict:
@@ -87,6 +117,8 @@ def _loop() -> None:
                 run_once()
             else:
                 bets.sync()  # keep closing prices and results current for logged bets
+            for sport in ("nfl", "nba"):
+                snapshot(sport, s)
         except Exception:
             traceback.print_exc()
         time.sleep(INTERVAL_SECONDS)

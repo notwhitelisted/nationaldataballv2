@@ -85,6 +85,29 @@ CREATE TABLE IF NOT EXISTS odds_props (
 );
 CREATE INDEX IF NOT EXISTS ix_odds_props_event ON odds_props(event_id, fetched_at);
 
+-- Kalshi prices next to our probabilities for every priced market, re-recorded only when
+-- something changes. The last row before kickoff is the closing price, so any bet filter
+-- can be replayed against real prices later, not just the bets we happened to take.
+CREATE TABLE IF NOT EXISTS market_snapshots (
+    taken_at TEXT NOT NULL,
+    sport TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    market_type TEXT NOT NULL,
+    game_id TEXT,
+    kickoff TEXT,
+    strike REAL,
+    yes_bid REAL,
+    yes_ask REAL,
+    model_prob REAL,
+    book_prob REAL,
+    fair_prob REAL,
+    player_id TEXT,
+    proj_mean REAL,
+    min_boost REAL,
+    usage_boost REAL
+);
+CREATE INDEX IF NOT EXISTS ix_market_snapshots_ticker ON market_snapshots(ticker, taken_at);
+
 CREATE TABLE IF NOT EXISTS bets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     created_at TEXT NOT NULL,
@@ -132,7 +155,11 @@ BET_COLUMNS = {
     "edge": "REAL",                                # expected ROI when the bet was placed
     "sold_contracts": "INTEGER NOT NULL DEFAULT 0",
     "sell_proceeds": "REAL NOT NULL DEFAULT 0",
+    "model_prob": "REAL",                          # our model's P(yes) before blending with the market
+    "book_prob": "REAL",                           # sportsbook P(yes), if a line was pulled
+    "tags": "TEXT",                                # why it was taken, e.g. "teammate out, book line"
 }
+SNAPSHOT_COLUMNS = {"carry_boost": "REAL"}  # NFL: carries added because a teammate is out
 
 
 def init_db() -> None:
@@ -142,6 +169,10 @@ def init_db() -> None:
         for col, ddl in BET_COLUMNS.items():
             if col not in have:
                 conn.execute(f"ALTER TABLE bets ADD COLUMN {col} {ddl}")
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(market_snapshots)")}
+        for col, ddl in SNAPSHOT_COLUMNS.items():
+            if col not in have:
+                conn.execute(f"ALTER TABLE market_snapshots ADD COLUMN {col} {ddl}")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS ix_bets_ext ON bets(ext_id) WHERE ext_id IS NOT NULL")
 
 
