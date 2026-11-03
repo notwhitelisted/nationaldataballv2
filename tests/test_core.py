@@ -284,3 +284,38 @@ def test_props_backtest_summary_scores_calibrated_model_above_noise():
     assert s["overall"]["skill_vs_base"] > 0
     assert s["minutes"]["bias"] == 1.0
     assert all(abs(c["pred"] - c["actual"]) < 0.06 for c in s["calibration"])
+
+
+def test_nfl_tds_follow_opportunity_not_lucky_scores():
+    import pandas as pd
+    from app.config import current_nfl_season
+    from app.models.props import project_nfl
+
+    def hist(targets, tds):
+        n = len(tds)
+        return pd.DataFrame({
+            "season": current_nfl_season(), "position": "WR", "t": range(n, 0, -1),
+            "carries": 0.0, "rushing_tds": 0.0, "targets": targets, "receiving_tds": tds, "tds": tds,
+            "passing_yards": 0.0, "passing_tds": 0.0, "rushing_yards": 0.0, "receiving_yards": 40.0, "receptions": 3.0,
+        })
+
+    rates = {"WR": (0.03, 0.045)}
+    fringe = project_nfl(hist([2.0] * 6, [1, 1, 0, 0, 0, 0]), {}, td_rates=rates)  # 2 lucky TDs on 12 targets
+    wr1 = project_nfl(hist([10.0] * 6, [0, 1, 0, 0, 0, 0]), {}, td_rates=rates)
+    assert wr1["tds"]["mean"] > 2 * fringe["tds"]["mean"]
+    assert fringe["tds"]["mean"] < 0.2
+
+
+def test_nfl_out_rb_carries_go_to_healthy_rbs_by_share():
+    from app.models.props import NFL_CARRY_ABSORB, _nfl_redistribute_carries
+
+    def proj(pos, carries):
+        return {"position": pos, "carries": carries, "tds_rush_frac": 0.8,
+                "rush_yds": {"mean": carries * 4.0}, "tds": {"mean": 0.5}}
+
+    rb2, rb3, wr = proj("RB", 6.0), proj("RB", 2.0), proj("WR", 1.0)
+    _nfl_redistribute_carries([rb2, rb3, wr], freed=16.0)
+    assert rb2["carry_boost"] == NFL_CARRY_ABSORB * 16 * 0.75
+    assert rb2["rush_yds"]["mean"] == rb2["carries"] * 4.0  # yards per carry unchanged
+    assert rb2["tds"]["mean"] > 0.5 and rb3["carry_boost"] < rb2["carry_boost"]
+    assert "carry_boost" not in wr and wr["carries"] == 1.0

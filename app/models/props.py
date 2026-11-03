@@ -341,7 +341,20 @@ NFL_DISPERSION = {"pass_yds": 22.0, "pass_tds": 1.0, "rush_yds": 16.0, "rec_yds"
 # Which defensive "allowed" factor scales each stat.
 NFL_DEF_FACTOR = {"pass_yds": "passing_yards", "rec_yds": "passing_yards", "receptions": "receptions",
                   "rush_yds": "rushing_yards", "pass_tds": "passing_tds", "tds": "tds"}
-TD_PRIOR = {"RB": 0.45, "WR": 0.35, "TE": 0.25, "QB": 0.12}
+# Touchdowns are projected from opportunity: weighted carries x rush-TD rate + targets x rec-TD rate.
+# Each player's rates are shrunk toward his position's league rate with this many carries/targets
+# of prior weight, so a few lucky scores barely move a low-volume player. Walk-forward on 2025-26
+# (tuned on 2025, tested on 2026) this beat the old TDs-per-game average by ~6% Brier, mostly by no
+# longer overrating fringe receivers.
+TD_PRIOR_CARRIES, TD_PRIOR_TARGETS = 150, 100
+TD_RATE_FALLBACK = (0.03, 0.04)  # (per carry, per target) if a position has no recent league data
+
+
+def nfl_td_rates(pw: pd.DataFrame) -> dict:
+    """League rush-TD rate per carry and rec-TD rate per target by position, over about the last year."""
+    recent = pw[pw["t"] >= pw["t"].max() - 100]
+    g = recent.groupby("position")[["rushing_tds", "carries", "receiving_tds", "targets"]].sum()
+    return {pos: (r.rushing_tds / max(r.carries, 1), r.receiving_tds / max(r.targets, 1)) for pos, r in g.iterrows()}
 
 
 def nfl_defense_factors(pw: pd.DataFrame) -> dict:
@@ -362,7 +375,7 @@ WIND_PASS_PER_MPH = 0.012
 WIND_STATS = {"pass_yds", "pass_tds", "rec_yds", "receptions"}
 
 
-def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0) -> dict | None:
+def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0, td_rates: dict | None = None) -> dict | None:
     h = hist.head(16)
     if len(h) == 0:
         return None
@@ -373,8 +386,12 @@ def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0) -> dict |
     for key, col in NFL_STATS.items():
         vals = h[col].to_numpy(float)
         if key == "tds":
-            prior = TD_PRIOR.get(pos, 0.1)
-            mean = (np.sum(w * vals) + 3 * prior) / (np.sum(w) + 3)
+            lr_rush, lr_rec = (td_rates or {}).get(pos, TD_RATE_FALLBACK)
+            rush = (np.sum(w * h["rushing_tds"]) + TD_PRIOR_CARRIES * lr_rush) / (np.sum(w * h["carries"]) + TD_PRIOR_CARRIES)
+            rec = (np.sum(w * h["receiving_tds"]) + TD_PRIOR_TARGETS * lr_rec) / (np.sum(w * h["targets"]) + TD_PRIOR_TARGETS)
+            car, tgt = np.average(h["carries"], weights=w), np.average(h["targets"], weights=w)
+            mean = car * rush + tgt * rec
+            out.update(carries=float(car), targets=float(tgt), tds_rush_frac=float(car * rush / mean) if mean > 0 else 0.0)
         else:
             mean = float(np.average(vals, weights=w))
         mean *= dfac.get(NFL_DEF_FACTOR[key], 1.0)
@@ -384,13 +401,36 @@ def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0) -> dict |
     return out
 
 
+# Share of a newly-out player's carries that goes to the healthy RBs (the rest to call-ups and depth).
+# Walk-forward 2021-26 with nflverse injury reports: tuned on 2021-23, it cut RB carry error 6% on
+# 2024-26 (19% when 3+ carries were freed). Targets were tested the same way and left out: teammates
+# do gain ~0.4 targets, but which teammate is not predictable, so spreading them made errors worse.
+NFL_CARRY_ABSORB = 0.45
+NFL_FREED_MIN_VOLUME = 3.0  # carries + targets per game for an absence to matter
+
+
+def _nfl_redistribute_carries(team_proj: list[dict], freed: float) -> None:
+    """Hand freed carries to healthy RBs by carry share, scaling rush yards and rushing TDs with them."""
+    rbs = [p for p in team_proj if p["position"] == "RB" and p["carries"] > 0]
+    total = sum(p["carries"] for p in rbs)
+    for p in rbs:
+        add = NFL_CARRY_ABSORB * freed * p["carries"] / total
+        scale = (p["carries"] + add) / p["carries"]
+        p["rush_yds"]["mean"] *= scale
+        p["tds"]["mean"] *= 1 + p["tds_rush_frac"] * (scale - 1)
+        p["carries"] += add
+        p["carry_boost"] = add
+
+
 def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tuple[dict, PlayerIndex, dict]:
-    """Same contract as nba_projections. Players ruled out are dropped (no target redistribution yet)."""
+    """Same contract as nba_projections. Players ruled out are dropped and, if they played the team's
+    last game, their carries go to the healthy RBs (see NFL_CARRY_ABSORB)."""
     pw = pw.dropna(subset=["player_id", "player_display_name"]).sort_values("t", ascending=False)
     latest = pw.drop_duplicates("player_id")[["player_id", "player_display_name", "team"]].rename(
         columns={"player_id": "id", "player_display_name": "name"})
     index = PlayerIndex(latest)
     dfacs = nfl_defense_factors(pw)
+    td_rates = nfl_td_rates(pw)
     team_last = pw.groupby("team")["t"].max()
     by_player = dict(tuple(pw.groupby("player_id")))
     out, notes = {}, {}
@@ -400,6 +440,7 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
         for side, opp in (("home", "away"), ("away", "home")):
             team = g[side]
             roster = latest[latest["team"] == team]
+            team_proj, freed = [], 0.0
             for pid in roster["id"]:
                 hist = by_player[pid]
                 if hist["position"].iloc[0] not in ("QB", "RB", "WR", "TE"):
@@ -408,7 +449,7 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
                 # Skip players absent for a month or more (injured reserve, cut, retired).
                 if last_t // 100 != tl // 100 or tl - last_t > 3:
                     continue
-                proj = project_nfl(hist, dfacs.get(g[opp], {}), wind)
+                proj = project_nfl(hist, dfacs.get(g[opp], {}), wind, td_rates)
                 if not proj:
                     continue
                 name = hist["player_display_name"].iloc[0]
@@ -417,6 +458,10 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
                     volume = proj["pass_yds"]["mean"] / 4 + proj["rush_yds"]["mean"] + proj["rec_yds"]["mean"]
                     if volume >= 25:
                         notes.setdefault(g["id"], []).append(f"{team} {inj['status']}: {name} ({proj['position']})")
+                    # Already missing games: teammates' recent numbers have absorbed him.
+                    if (last_t == tl and proj["position"] in ("RB", "WR", "TE")
+                            and proj["carries"] + proj["targets"] >= NFL_FREED_MIN_VOLUME):
+                        freed += proj["carries"]
                     continue
                 proj.update({
                     "id": pid, "name": name, "team": team, "opp": g[opp],
@@ -426,6 +471,9 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
                     "injury": inj,
                 })
                 out[(pid, g["id"])] = proj
+                team_proj.append(proj)
+            if freed > 0:
+                _nfl_redistribute_carries(team_proj, freed)
     return out, index, notes
 
 

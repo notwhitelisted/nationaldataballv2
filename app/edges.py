@@ -141,6 +141,8 @@ def evaluate_market(m: dict, g: dict, st: dict, settings: dict) -> dict | None:
             flags.append(f"+{proj['min_boost']:.0f} min projected (teammate out)")
         if proj.get("usage_boost", 0) >= 0.03:
             flags.append(f"+{proj['usage_boost']:.0%} scoring rate (teammate usage out)")
+        if proj.get("carry_boost", 0) >= 1:
+            flags.append(f"+{proj['carry_boost']:.1f} carries projected (teammate out)")
         lines = st["prop_lines"].get(g["id"], {})
         quotes = lines.get((m["player_key"], m["type"])) or lines.get((props.name_key(proj["name"]), m["type"]))
         if quotes:
