@@ -217,7 +217,9 @@ def summarize(df: pd.DataFrame, sport: str = "nba") -> dict:
 
 
 def backtest_nba(log=print) -> dict:
-    return summarize(run_nba(log))
+    res = summarize(run_nba(log))
+    res["market"] = market_check("nba")
+    return res
 
 
 def backtest_nfl(log=print) -> dict:
@@ -248,7 +250,9 @@ def market_check(sport: str, max_spread: float = 0.10, edge: float = 0.05) -> di
         pw = nfl.load_player_weeks().drop_duplicates(["player_id", "game_id"]).set_index(["player_id", "game_id"])
         stat_col = props.NFL_STATS
     else:
-        return None
+        pw = nba.load_player_games()
+        pw = pw[pw["min"] > 0].set_index(["player_id", "game_id"])  # DNPs settle as voids
+        stat_col = {s: s for s in LADDERS}
     rows = []
     for r in last.itertuples():
         if (r.player_id, r.game_id) not in pw.index or r.market_type not in stat_col:

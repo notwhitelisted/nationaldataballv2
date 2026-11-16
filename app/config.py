@@ -48,6 +48,9 @@ DEFAULT_SETTINGS = {
     "min_edge": 0.03,
     # Weight on our model vs the sportsbook line when both exist (0 = pure market, 1 = pure model).
     "model_weight": 0.35,
+    # The same for player props. Against Kalshi's last pre-game price (Nov 2026: 20 NFL and 29 NBA
+    # games), every weight above 0 scored worse than the market alone, 0.35 by ~0.6% Brier in both sports.
+    "prop_model_weight": 0.15,
     # Kalshi taker fee coefficient: fee = ceil(coef * C * P * (1-P)) dollars.
     "kalshi_fee_coef": 0.07,
     # Paper trading: 1 = automatically paper-bet every qualifying edge (checked every 15 minutes).

@@ -148,7 +148,7 @@ def evaluate_market(m: dict, g: dict, st: dict, settings: dict) -> dict | None:
         quotes = lines.get((m["player_key"], m["type"])) or lines.get((props.name_key(proj["name"]), m["type"]))
         if quotes:
             book_prob = odds.book_prop_prob(quotes, k, proj[m["type"]]["disp"])
-        w = settings["model_weight"]
+        w = settings["prop_model_weight"]
         if book_prob is not None:
             fair_p = w * model_p + (1 - w) * book_prob
         elif mid is not None and m["yes_ask"] and m["yes_bid"] and m["yes_ask"] - m["yes_bid"] <= 0.10:
