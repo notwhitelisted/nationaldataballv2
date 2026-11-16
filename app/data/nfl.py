@@ -38,6 +38,17 @@ def refresh(log=print) -> None:
     log("NFL: done")
 
 
+def ensure_seasons(seasons, log=print) -> None:
+    """Download weekly player stats for any of these seasons we don't have (used by the backtest)."""
+    missing = [s for s in seasons if not _player_path(s).exists()]
+    if not missing:
+        return
+    with httpx.Client(follow_redirects=True, timeout=180) as client:
+        for s in missing:
+            log(f"NFL: downloading {s} weekly player stats")
+            _download(client, NFLVERSE_PLAYER_WEEK.format(season=s), _player_path(s))
+
+
 def has_data() -> bool:
     return GAMES_PATH.exists()
 
@@ -56,9 +67,11 @@ def load_games(seasons_back: int = 3) -> pd.DataFrame:
     return g.reset_index(drop=True)
 
 
-def load_player_weeks() -> pd.DataFrame:
+def load_player_weeks(seasons=None) -> pd.DataFrame:
+    """Weekly player stats for the given seasons (default: last season and this one)."""
     season = current_nfl_season()
-    frames = [pd.read_csv(_player_path(s), low_memory=False) for s in (season - 1, season) if _player_path(s).exists()]
+    seasons = seasons or (season - 1, season)
+    frames = [pd.read_csv(_player_path(s), low_memory=False) for s in seasons if _player_path(s).exists()]
     if not frames:
         return pd.DataFrame()
     p = pd.concat(frames, ignore_index=True)

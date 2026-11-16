@@ -340,20 +340,24 @@ async function loadModel() {
   }
 }
 
-const STAT_NAMES = { pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast" };
+const STAT_NAMES = {
+  pts: "Points", reb: "Rebounds", ast: "Assists", fg3m: "Threes", pra: "Pts+Reb+Ast",
+  tds: "Anytime TDs", pass_tds: "Passing TDs", pass_yds: "Passing yards", rush_yds: "Rushing yards",
+  rec_yds: "Receiving yards", receptions: "Receptions",
+};
 
 async function loadPropsBacktest() {
   const el = $("#model-props-bt");
-  if (state.sport !== "nba") {
-    el.innerHTML = `<h3>Player props backtest</h3><p class="muted small">NBA only for now: switch to NBA at the top to see it.</p>`;
-    return;
-  }
-  const { running, result: r } = await api("/api/backtest/props");
+  const sport = state.sport;
+  const { running, result: r } = await api(`/api/backtest/props?sport=${sport}`);
   const button = `<button id="props-bt-run" ${running ? "disabled" : ""}>${running ? "Running… (a few minutes)" : r ? "Re-run" : "Run props backtest"}</button>`;
+  const how = sport === "nba"
+    ? `Every past game day is replayed with the live projection code, using only earlier box scores, and each
+    projection is scored on Kalshi-style ladders (10+/15+/20+ points, …). Baseline = the player's hit rate over their last 20 games.`
+    : `Every week since 2023 is replayed with the live projection code, using only earlier weeks and that game's closing
+    spread and total, and each projection is scored on Kalshi-style ladders (1+ TD, 40+ yards, …). Baseline = the player's hit rate over their last 10 games.`;
   let html = `<h3>Player props backtest</h3>
-    <p class="muted small">Every past game day is replayed with the live projection code, using only earlier box scores, and each
-    projection is scored on Kalshi-style ladders (10+/15+/20+ points, …). Baseline = the player's hit rate over their last 20 games.
-    Players who didn't play count as ruled out, so availability is known perfectly here. ${button}</p>`;
+    <p class="muted small">${how} Players who didn't play count as ruled out, so availability is known perfectly here. ${button}</p>`;
   if (r && !r.error) {
     const card = (k, v) => `<div class="card"><div class="k">${k}</div><div class="v">${v}</div></div>`;
     const o = r.overall, m = r.main_lines;
@@ -362,10 +366,14 @@ async function loadPropsBacktest() {
         ${card("Brier: model / baseline", `${num(o.brier_model, 4)} / ${num(o.brier_base, 4)}`)}
         ${card("Better than baseline by", pct(o.skill_vs_base))}
         ${card("Main lines (35–65%): model / baseline", `${num(m.brier_model, 4)} / ${num(m.brier_base, 4)}`)}
-        ${card("Minutes error (avg)", num(r.minutes.mae, 1))}
-        ${card("Minutes bias (actual − proj)", signed(r.minutes.bias))}
+        ${r.minutes ? card("Minutes error (avg)", num(r.minutes.mae, 1)) + card("Minutes bias (actual − proj)", signed(r.minutes.bias)) : ""}
       </div>
       <h3>By stat</h3><div class="table-wrap" id="props-bt-stats"></div>
+      ${r.market ? `<h3>Against Kalshi's prices</h3>
+      <p class="muted small">The real test: the model vs Kalshi's last price before kickoff, on ${r.market.games} games the app was open for.
+      Positive "better by" means the model was more accurate than the market. "Edge bets" buys every rung where the model beat the ask by
+      ${pct(r.market.edge)}+; ROI is per dollar at the ask, before fees.</p>
+      <div class="table-wrap" id="props-bt-market"></div>` : ""}
       <h3>Calibration (all rungs)</h3><div class="table-wrap"><table><thead><tr><th class="num">Model said</th><th class="num">Actually hit</th><th class="num">Predictions</th></tr></thead><tbody>
       ${r.calibration.map((c) => `<tr><td class="num">${pct(c.pred)}</td><td class="num">${pct(c.actual)}</td><td class="num">${c.n.toLocaleString()}</td></tr>`).join("")}
       </tbody></table></div>`;
@@ -385,12 +393,24 @@ async function loadPropsBacktest() {
       { label: "Brier baseline", num: true, get: (s) => s.brier_base, html: (s) => num(s.brier_base, 4) },
       { label: "Better by", num: true, get: (s) => s.skill_vs_base, html: (s) => pct(s.skill_vs_base) },
     ], r.by_stat, "props-bt-stats");
+    if (r.market) {
+      table($("#props-bt-market"), [
+        { label: "Stat", get: (s) => (s.stat === "all" ? "All" : STAT_NAMES[s.stat] || s.stat) },
+        { label: "Rungs", num: true, get: (s) => s.n },
+        { label: "Brier model", num: true, get: (s) => s.brier_model, html: (s) => num(s.brier_model, 4) },
+        { label: "Brier Kalshi", num: true, get: (s) => s.brier_market, html: (s) => num(s.brier_market, 4) },
+        { label: "Better by", num: true, get: (s) => s.skill_vs_market, html: (s) => pct(s.skill_vs_market) },
+        { label: "Edge bets", num: true, get: (s) => s.bets },
+        { label: "Hit rate", num: true, get: (s) => s.bet_hit_rate, html: (s) => (s.bet_hit_rate == null ? "" : pct(s.bet_hit_rate)) },
+        { label: "ROI", num: true, get: (s) => s.bet_roi, html: (s) => (s.bet_roi == null ? "" : pct(s.bet_roi)) },
+      ], [{ stat: "all", ...r.market.overall }, ...r.market.by_stat], "props-bt-market");
+    }
   }
   $("#props-bt-run").onclick = async () => {
-    await api("/api/backtest/props", { method: "POST" });
+    await api(`/api/backtest/props?sport=${sport}`, { method: "POST" });
     loadPropsBacktest();
   };
-  if (running) setTimeout(() => state.tab === "model" && state.sport === "nba" && loadPropsBacktest(), 15000);
+  if (running) setTimeout(() => state.tab === "model" && state.sport === sport && loadPropsBacktest(), 15000);
 }
 
 // ---------------------------------------------------------------- Settings

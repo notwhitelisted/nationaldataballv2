@@ -319,3 +319,23 @@ def test_nfl_out_rb_carries_go_to_healthy_rbs_by_share():
     assert rb2["rush_yds"]["mean"] == rb2["carries"] * 4.0  # yards per carry unchanged
     assert rb2["tds"]["mean"] > 0.5 and rb3["carry_boost"] < rb2["carry_boost"]
     assert "carry_boost" not in wr and wr["carries"] == 1.0
+
+
+def test_nfl_game_lines_scale_projections():
+    import math
+    import pandas as pd
+    from app.config import current_nfl_season
+    from app.models.props import NFL_ENV_EXP, NFL_SPREAD_CLIP, NFL_TD_SPREAD, project_nfl
+
+    h = pd.DataFrame({
+        "season": current_nfl_season(), "position": "RB", "t": range(6, 0, -1),
+        "carries": 15.0, "rushing_tds": [1, 0, 0, 1, 0, 0], "targets": 3.0, "receiving_tds": 0.0, "tds": [1, 0, 0, 1, 0, 0],
+        "passing_yards": 0.0, "passing_tds": 0.0, "rushing_yards": 60.0, "receiving_yards": 20.0, "receptions": 2.0,
+    })
+    base = project_nfl(h, {})
+    fav = project_nfl(h, {}, env=1.2, margin=7.0)
+    assert fav["tds"]["mean"] == pytest.approx(base["tds"]["mean"] * math.exp(NFL_TD_SPREAD * 0.7))
+    assert fav["rush_yds"]["mean"] == pytest.approx(base["rush_yds"]["mean"] * 1.2 ** NFL_ENV_EXP["rush_yds"])
+    assert fav["receptions"]["mean"] == pytest.approx(base["receptions"]["mean"])  # receiving ignores the lines
+    huge = project_nfl(h, {}, margin=40.0)
+    assert huge["tds"]["mean"] == pytest.approx(base["tds"]["mean"] * math.exp(NFL_TD_SPREAD * NFL_SPREAD_CLIP / 10))

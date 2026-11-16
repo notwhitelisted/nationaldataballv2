@@ -184,11 +184,11 @@ def backtest(sport: Sport):
 props_bt = {"running": False}
 
 
-def _run_props_backtest() -> None:
+def _run_props_backtest(sport: str) -> None:
     try:
-        res = props_backtest.backtest_nba(log=_log)
+        res = (props_backtest.backtest_nba if sport == "nba" else props_backtest.backtest_nfl)(log=_log)
         res["run_at"] = datetime.now().isoformat(timespec="seconds")
-        set_meta("props_backtest_nba", res)
+        set_meta(f"props_backtest_{sport}", res)
     except Exception as e:
         _log(f"Props backtest failed: {e}")
         traceback.print_exc()
@@ -197,18 +197,18 @@ def _run_props_backtest() -> None:
 
 
 @app.get("/api/backtest/props")
-def props_backtest_get():
-    """Last saved NBA props backtest (it takes minutes, so it runs on request, not per page load)."""
-    return {"running": props_bt["running"], "result": get_meta("props_backtest_nba")}
+def props_backtest_get(sport: Sport = "nba"):
+    """Last saved props backtest (it takes minutes, so it runs on request, not per page load)."""
+    return {"running": props_bt["running"], "result": get_meta(f"props_backtest_{sport}")}
 
 
 @app.post("/api/backtest/props")
-def props_backtest_run():
+def props_backtest_run(sport: Sport = "nba"):
     with job_lock:
         if props_bt["running"]:
             return {"started": False}
         props_bt["running"] = True
-    threading.Thread(target=_run_props_backtest, daemon=True).start()
+    threading.Thread(target=_run_props_backtest, args=(sport,), daemon=True).start()
     return {"started": True}
 
 

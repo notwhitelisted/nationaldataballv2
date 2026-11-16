@@ -92,6 +92,85 @@ def run_nba(log=print) -> pd.DataFrame:
                                        "min_boost", "usage_boost", "env"])
 
 
+# NFL rungs as Kalshi lists them (strike 9.5 -> 10+), scored where the model prices them in P_RANGE.
+NFL_LADDERS = {
+    "tds": range(1, 4), "pass_tds": range(1, 6), "receptions": range(1, 13),
+    "rush_yds": range(10, 151, 10), "rec_yds": range(10, 151, 10), "pass_yds": range(125, 376, 25),
+}
+NFL_SEASONS = range(2022, 2027)  # history from the first; replayed from the second
+NFL_WARMUP_WEEKS = 3
+NFL_BASELINE_GAMES = 10
+
+
+def run_nfl(log=print) -> pd.DataFrame:
+    """NFL version of run_nba: every week replayed with props.nfl_projections on prior weeks only.
+
+    Known differences from live:
+      * No historical injury reports: a player with no stats that week is treated as Out (which
+        also hands his carries to teammates), so availability is known perfectly.
+      * The game environment uses nflverse closing lines, a little sharper than lines at bet time.
+      * Wind is the recorded game-time wind, not a forecast.
+    """
+    from ..data import nfl
+    from ..config import current_nfl_season
+    seasons = [s for s in NFL_SEASONS if s <= current_nfl_season()]
+    nfl.ensure_seasons(seasons, log)
+    pw = nfl.load_player_weeks(seasons).dropna(subset=["player_id"]).sort_values("t", ascending=False)
+    games = gm.load_games("nfl")
+    done = games[games["completed"] & games["season"].isin(seasons[1:])]
+    rows = []
+    for (season, week), wk in done.groupby(["season", "week"]):
+        if week <= NFL_WARMUP_WEEKS and season == seasons[1]:
+            continue
+        t = season * 100 + week
+        hist = pw[(pw["t"] < t) & (pw["season"] >= season - 1)]
+        today = pw[pw["t"] == t]
+        played = set(zip(today["team"], today["player_display_name"]))
+        glist = []
+        for _, r in wk.iterrows():
+            wind = r["wind"] if r["roof"] in ("outdoors", "open") and pd.notna(r["wind"]) else 0.0
+            fair = None
+            if pd.notna(r["spread_line"]) and pd.notna(r["total_line"]):
+                fair = {"home_pts": (r["total_line"] + r["spread_line"]) / 2,
+                        "away_pts": (r["total_line"] - r["spread_line"]) / 2, "margin": r["spread_line"]}
+            glist.append({"id": r["id"], "home": r["home_team"], "away": r["away_team"], "kickoff": r["kickoff"].isoformat(),
+                          "weather": {"roof": "outdoors", "wind_mph": float(wind)}, "fair": fair})
+        teams = {g["home"] for g in glist} | {g["away"] for g in glist}
+
+        def injury_of(team, name, _):
+            if team in teams and (team, name) not in played:
+                return {"out": True, "status": "Out", "comment": "did not play"}
+            return None
+
+        norms = props.nfl_team_points_norm(games, before=wk["date"].min())
+        proj, _, _ = props.nfl_projections(hist, glist, injury_of, norms=norms, season=int(season))
+        actual = today.drop_duplicates(["player_id", "game_id"]).set_index(["player_id", "game_id"])
+        recent = dict(tuple(hist.groupby("player_id")))
+        for (pid, gid), p in proj.items():
+            if (pid, gid) not in actual.index:
+                continue
+            a = actual.loc[(pid, gid)]
+            if a["team"] != p["team"]:
+                continue
+            last = recent[pid].head(NFL_BASELINE_GAMES)
+            for stat, ks in NFL_LADDERS.items():
+                if stat.startswith("pass") != (p["position"] == "QB"):
+                    continue  # QBs are priced on passing, everyone else on rushing/receiving
+                col = props.NFL_STATS[stat]
+                mean, disp, y = p[stat]["mean"], p[stat]["disp"], float(a[col])
+                past = last[col].to_numpy(float)
+                for k in ks:
+                    pm = pricing.count_prob_at_least(mean, disp, k)
+                    if not P_RANGE[0] < pm < P_RANGE[1]:
+                        continue
+                    rows.append((wk["date"].min(), int(season), int(week), pid, gid, p["position"], stat, k,
+                                 mean, disp, y, pm, (np.sum(past >= k) + 1) / (len(past) + 2), y >= k,
+                                 p["env"], p.get("carry_boost", 0.0)))
+        log(f"NFL props backtest: {season} week {week} ({len(rows)} rows)")
+    return pd.DataFrame(rows, columns=["date", "season", "week", "player_id", "game_id", "position", "stat", "k",
+                                       "mean", "disp", "actual", "p_model", "p_base", "hit", "env", "carry_boost"])
+
+
 def _logloss(p, y):
     p = np.clip(p, 1e-4, 1 - 1e-4)
     return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
@@ -110,7 +189,7 @@ def _calibration(df: pd.DataFrame, bins: int = 10) -> list[dict]:
     return [{"pred": float(r.pred), "actual": float(r.actual), "n": int(r.n)} for r in cal.itertuples()]
 
 
-def summarize(df: pd.DataFrame) -> dict:
+def summarize(df: pd.DataFrame, sport: str = "nba") -> dict:
     if df.empty:
         return {"error": "not enough games"}
     pgames = df.drop_duplicates(["player_id", "game_id", "stat"])
@@ -125,15 +204,68 @@ def summarize(df: pd.DataFrame) -> dict:
     # Rungs near 50/50 are the ones Kalshi prices as its main lines.
     main = df[df["p_model"].between(0.35, 0.65)]
     m = pgames.drop_duplicates(["player_id", "game_id"])
-    return {
-        "sport": "nba", "from": df["date"].min().date().isoformat(), "to": df["date"].max().date().isoformat(),
+    out = {
+        "sport": sport, "from": df["date"].min().date().isoformat(), "to": df["date"].max().date().isoformat(),
         "games": int(df["game_id"].nunique()), "player_games": int(len(m)), "predictions": len(df),
         "overall": _scores(df), "main_lines": _scores(main), "calibration": _calibration(df),
-        "minutes": {"mae": float((m["min"] - m["proj_min"]).abs().mean()), "bias": float((m["min"] - m["proj_min"]).mean())},
         "by_stat": by_stat,
         "by_season": [{"season": int(s), **_scores(g)} for s, g in df.groupby("season")],
     }
+    if "proj_min" in m:
+        out["minutes"] = {"mae": float((m["min"] - m["proj_min"]).abs().mean()), "bias": float((m["min"] - m["proj_min"]).mean())}
+    return out
 
 
 def backtest_nba(log=print) -> dict:
     return summarize(run_nba(log))
+
+
+def backtest_nfl(log=print) -> dict:
+    res = summarize(run_nfl(log), "nfl")
+    res["market"] = market_check("nfl")
+    return res
+
+
+def market_check(sport: str, max_spread: float = 0.10, edge: float = 0.05) -> dict | None:
+    """Score the model against Kalshi's own prices on settled player props.
+
+    Uses the last market snapshot before kickoff for each ticker (the app records these while it
+    runs), so it only covers games the app was open for. The outcome comes from the box scores.
+    Also reports what buying every rung where model - ask >= edge would have returned.
+    """
+    from ..data import nfl
+    from ..db import session
+    with session() as conn:
+        snaps = pd.read_sql_query(
+            "SELECT ticker, market_type, game_id, kickoff, strike, yes_bid, yes_ask, model_prob, player_id, taken_at "
+            "FROM market_snapshots WHERE sport = ? AND player_id IS NOT NULL AND taken_at < kickoff "
+            "ORDER BY taken_at", conn, params=(sport,))
+    if snaps.empty:
+        return None
+    last = snaps.groupby("ticker").tail(1)
+    last = last[(last["yes_ask"] - last["yes_bid"] <= max_spread) & (last["yes_bid"] > 0) & (last["yes_ask"] < 1)]
+    if sport == "nfl":
+        pw = nfl.load_player_weeks().drop_duplicates(["player_id", "game_id"]).set_index(["player_id", "game_id"])
+        stat_col = props.NFL_STATS
+    else:
+        return None
+    rows = []
+    for r in last.itertuples():
+        if (r.player_id, r.game_id) not in pw.index or r.market_type not in stat_col:
+            continue
+        y = float(pw.loc[(r.player_id, r.game_id), stat_col[r.market_type]]) >= np.floor(r.strike) + 1
+        rows.append((r.market_type, r.model_prob, (r.yes_bid + r.yes_ask) / 2, r.yes_ask, y, r.game_id))
+    if not rows:
+        return None
+    d = pd.DataFrame(rows, columns=["stat", "p_model", "p_mkt", "ask", "hit", "game_id"])
+
+    def score(g):
+        y = g["hit"].to_numpy(float)
+        bm, bk = float(np.mean((g["p_model"] - y) ** 2)), float(np.mean((g["p_mkt"] - y) ** 2))
+        bets = g[g["p_model"] - g["ask"] >= edge]
+        return {"n": len(g), "brier_model": bm, "brier_market": bk, "skill_vs_market": 1 - bm / bk,
+                "bets": len(bets), "bet_hit_rate": float(bets["hit"].mean()) if len(bets) else None,
+                "bet_roi": float((bets["hit"] - bets["ask"]).sum() / bets["ask"].sum()) if len(bets) else None}
+
+    return {"games": int(d["game_id"].nunique()), "edge": edge, "overall": score(d),
+            "by_stat": [{"stat": s, **score(g)} for s, g in d.groupby("stat")]}

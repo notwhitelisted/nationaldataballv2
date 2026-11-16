@@ -374,12 +374,41 @@ def nfl_defense_factors(pw: pd.DataFrame) -> dict:
 WIND_PASS_PER_MPH = 0.012
 WIND_STATS = {"pass_yds", "pass_tds", "rec_yds", "receptions"}
 
+# How strongly each stat follows the game environment: the team's expected points (from the
+# game lines) over what it has been scoring lately. Touchdowns instead follow the spread:
+# favorites score more than their players' history says (x e^(0.25 * points favored / 10)).
+# Walk-forward NFL props backtest 2023-26, tuned on 2023-24 and scored on 2025-26 (Brier):
+# pass TDs +0.7%, TDs +0.5%, rush yards +0.2%; receiving gained nothing. The expected total
+# added nothing for TDs once the spread was in, likely because the defense factor covers it.
+NFL_ENV_EXP = {"pass_yds": 0.1, "pass_tds": 0.6, "rush_yds": 0.4, "rec_yds": 0.1, "receptions": 0.0, "tds": 0.0}
+NFL_ENV_CLIP = (0.7, 1.4)
+NFL_TD_SPREAD = 0.25
+NFL_SPREAD_CLIP = 14.0
 
-def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0, td_rates: dict | None = None) -> dict | None:
+
+def nfl_team_points_norm(games: pd.DataFrame, before=None) -> dict:
+    """Recency-weighted points per game for each team over its last 10 completed games."""
+    g = games[games["completed"]]
+    if before is not None:
+        g = g[g["date"] < before]
+    long = pd.concat([
+        g[["date", "home_team", "home_score"]].set_axis(["date", "team", "pts"], axis=1),
+        g[["date", "away_team", "away_score"]].set_axis(["date", "team", "pts"], axis=1),
+    ]).sort_values("date", ascending=False)
+    out = {}
+    for team, t in long.groupby("team"):
+        t = t.head(10)
+        out[team] = float(np.average(t["pts"], weights=_decay_weights(len(t), 0.88)))
+    return out
+
+
+def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0, td_rates: dict | None = None,
+                env: float = 1.0, season: int | None = None, margin: float = 0.0) -> dict | None:
+    """margin: the team's expected winning margin (negative when an underdog)."""
     h = hist.head(16)
     if len(h) == 0:
         return None
-    cur = (h["season"] == current_nfl_season()).to_numpy()
+    cur = (h["season"] == (season or current_nfl_season())).to_numpy()
     w = _decay_weights(len(h), 0.85) * np.where(cur, 1.0, 0.5)
     pos = h["position"].iloc[0]
     out = {"games": len(h), "position": pos}
@@ -391,13 +420,15 @@ def project_nfl(hist: pd.DataFrame, dfac: dict, wind_mph: float = 0.0, td_rates:
             rec = (np.sum(w * h["receiving_tds"]) + TD_PRIOR_TARGETS * lr_rec) / (np.sum(w * h["targets"]) + TD_PRIOR_TARGETS)
             car, tgt = np.average(h["carries"], weights=w), np.average(h["targets"], weights=w)
             mean = car * rush + tgt * rec
+            mean *= np.exp(NFL_TD_SPREAD * np.clip(margin, -NFL_SPREAD_CLIP, NFL_SPREAD_CLIP) / 10)
             out.update(carries=float(car), targets=float(tgt), tds_rush_frac=float(car * rush / mean) if mean > 0 else 0.0)
         else:
             mean = float(np.average(vals, weights=w))
-        mean *= dfac.get(NFL_DEF_FACTOR[key], 1.0)
+        mean *= dfac.get(NFL_DEF_FACTOR[key], 1.0) * env ** NFL_ENV_EXP[key]
         if key in WIND_STATS:
             mean *= max(0.7, 1 - WIND_PASS_PER_MPH * max(0.0, wind_mph - 10))
         out[key] = {"mean": float(max(mean, 0.0)), "disp": _dispersion(np.clip(vals, 0, None), w, NFL_DISPERSION[key], 6)}
+    out["env"], out["margin"] = env, margin
     return out
 
 
@@ -422,9 +453,11 @@ def _nfl_redistribute_carries(team_proj: list[dict], freed: float) -> None:
         p["carry_boost"] = add
 
 
-def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tuple[dict, PlayerIndex, dict]:
+def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None, norms: dict | None = None,
+                    season: int | None = None) -> tuple[dict, PlayerIndex, dict]:
     """Same contract as nba_projections. Players ruled out are dropped and, if they played the team's
-    last game, their carries go to the healthy RBs (see NFL_CARRY_ABSORB)."""
+    last game, their carries go to the healthy RBs (see NFL_CARRY_ABSORB). norms (from
+    nfl_team_points_norm) turns each game's fair team points into the environment factor."""
     pw = pw.dropna(subset=["player_id", "player_display_name"]).sort_values("t", ascending=False)
     latest = pw.drop_duplicates("player_id")[["player_id", "player_display_name", "team"]].rename(
         columns={"player_id": "id", "player_display_name": "name"})
@@ -441,6 +474,11 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
             team = g[side]
             roster = latest[latest["team"] == team]
             team_proj, freed = [], 0.0
+            fair = g.get("fair") or {}
+            exp_pts = fair.get(f"{side}_pts")
+            env = exp_pts / norms[team] if exp_pts and norms and norms.get(team) else 1.0
+            env = float(np.clip(env, *NFL_ENV_CLIP))
+            margin = (fair.get("margin") or 0.0) * (1 if side == "home" else -1)
             for pid in roster["id"]:
                 hist = by_player[pid]
                 if hist["position"].iloc[0] not in ("QB", "RB", "WR", "TE"):
@@ -449,7 +487,7 @@ def nfl_projections(pw: pd.DataFrame, games: list[dict], injury_of=None) -> tupl
                 # Skip players absent for a month or more (injured reserve, cut, retired).
                 if last_t // 100 != tl // 100 or tl - last_t > 3:
                     continue
-                proj = project_nfl(hist, dfacs.get(g[opp], {}), wind, td_rates)
+                proj = project_nfl(hist, dfacs.get(g[opp], {}), wind, td_rates, env, season, margin)
                 if not proj:
                     continue
                 name = hist["player_display_name"].iloc[0]

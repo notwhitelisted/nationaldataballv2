@@ -49,7 +49,8 @@ def sport_state(sport: str, settings: dict) -> dict:
         else:
             pw = nfl.load_player_weeks()
             if not pw.empty:
-                projections, index, notes = props.nfl_projections(pw, games, injury_of)
+                norms = props.nfl_team_points_norm(gm.load_games("nfl"))
+                projections, index, notes = props.nfl_projections(pw, games, injury_of, norms=norms)
         for g in games:
             g["flags"] = g["flags"] + notes.get(g["id"], [])
             if g.get("odds_event_id"):
