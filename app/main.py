@@ -34,6 +34,7 @@ def _run_refresh(sports: list[str]) -> None:
                 (nfl if s == "nfl" else nba).refresh(log=_log)
                 injuries.get(s, force=True)
                 job["last"][s] = datetime.now().isoformat(timespec="seconds")
+                set_meta(f"refreshed_at_{s}", job["last"][s])
             except Exception as e:  # keep going with the other sport
                 _log(f"{s.upper()} refresh failed: {e}")
                 traceback.print_exc()
@@ -54,9 +55,15 @@ def start_refresh(sports: list[str]) -> bool:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    missing = [s for s, mod in (("nfl", nfl), ("nba", nba)) if not mod.has_data()]
-    if missing:
-        start_refresh(missing)
+    # Fetch stats on startup when there are none or the last refresh is over 12 hours old,
+    # so projections never run on weeks-old box scores.
+    stale = []
+    for s, mod in (("nfl", nfl), ("nba", nba)):
+        last = get_meta(f"refreshed_at_{s}")
+        if not mod.has_data() or last is None or (datetime.now() - datetime.fromisoformat(last)).total_seconds() > 12 * 3600:
+            stale.append(s)
+    if stale:
+        start_refresh(stale)
     paper.start_background()
     yield
 
